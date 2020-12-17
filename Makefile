@@ -365,7 +365,7 @@ include scripts/subarch.include
 # Default value for CROSS_COMPILE is not to prefix executables
 # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
 ARCH		?= $(SUBARCH)
-CROSS_COMPILE= $(srctree)/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+CROSS_COMPILE ?= $(srctree)/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
 #CROSS_COMPILE   ?= ../PLATFORM/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
 
 # Architecture as present in compile.h
@@ -431,7 +431,7 @@ OBJSIZE		= llvm-size
 STRIP		= llvm-strip
 else
 #CC		= $(CROSS_COMPILE)gcc
-CC    = $(srctree)/toolchain/clang/host/linux-x86/clang-r383902/bin/clang
+CC    ?= $(srctree)/toolchain/clang/host/linux-x86/clang-r383902/bin/clang
 #CC    = ../PLATFORM/prebuilts/clang/host/linux-x86/clang-r383902/bin/clang
 LD		= $(CROSS_COMPILE)ld
 AR		= $(CROSS_COMPILE)ar
