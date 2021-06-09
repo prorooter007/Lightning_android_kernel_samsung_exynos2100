@@ -50,6 +50,9 @@ STD=`echo -e "\033[0m"`		# Text Clear
   if [ -e "$(pwd)/arch/arm64/boot/Image" ]; then
     cp "$(pwd)/arch/arm64/boot/Image" $OUT_DIR/Image
 
+    DTB_DIR=$(pwd)/arch/arm64/boot/dts
+    $(pwd)/tools/mkdtimg cfg_create $(pwd)/out/dtb.img dt.configs/exynos2100.cfg -d ${DTB_DIR}/exynos
+    $(pwd)/tools/mkdtimg cfg_create $(pwd)/out/dtbo.img dt.configs/r9s.cfg -d ${DTB_DIR}/samsung/r9s
     echo "${BGREEN}***** Ready to Roar *****${STD}"
   fi
 
