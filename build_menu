@@ -1,5 +1,5 @@
 #!/bin/bash
-# AFANEH-KERNEL-BUILD menu
+# LIGHTNING-KERNEL-BUILD menu based on afaneh menu
 
 # Variables
 menu_version="v2.3"
@@ -17,7 +17,7 @@ export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=$PARENT_DIR/aarch64-linux-android-4
 export CLANG_PREBUILT_BIN=$PARENT_DIR/clang-r383902/bin
 export PATH=$PATH:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$CLANG_PREBUILT_BIN
 export LLVM=1
-KERNEL_MAKE_ENV="LOCALVERSION=-afaneh92"
+KERNEL_MAKE_ENV="LOCALVERSION=-LightningV1"
 
 # Color
 ON_BLUE=`echo -e "\033[44m"`	# On Blue
@@ -50,7 +50,7 @@ clang(){
 
 variant(){
   findconfig=""
-  findconfig=($(ls arch/arm64/configs/afaneh_* 2>/dev/null))
+  findconfig=($(ls arch/arm64/configs/lightning_* 2>/dev/null))
   declare -i i=1
   shift 2
   echo ""
@@ -86,7 +86,7 @@ build_kernel(){
   variant
   echo "${BGREEN}***** Compiling kernel *****${STD}"
   [ ! -d "$OUT_DIR" ] && mkdir $OUT_DIR
-  make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV afaneh_${VARIANT}_defconfig
+  make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV lightning_${VARIANT}_defconfig
   make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV
 
   [ -e $DIR/arch/arm64/boot/Image.gz ] && cp $DIR/arch/arm64/boot/Image.gz $OUT_DIR/Image.gz
@@ -110,7 +110,7 @@ anykernel3(){
     cd $PARENT_DIR/AnyKernel3
     git reset --hard
     cp $DIR/arch/arm64/boot/Image zImage
-    sed -i "s/ExampleKernel by osm0sis/${VARIANT} kernel by afaneh92/g" anykernel.sh
+    sed -i "s/ExampleKernel by osm0sis/${VARIANT} kernel by prorooter007/g" anykernel.sh
     sed -i "s/=maguro/=${VARIANT}/g" anykernel.sh
     sed -i "s/=toroplus/=/g" anykernel.sh
     sed -i "s/=toro/=/g" anykernel.sh
@@ -138,7 +138,7 @@ clang
 # Show menu
 show_menus(){
   clear
-  echo "${ON_BLUE}AFANEH-KERNEL-BUILD menu $menu_version${STD}"
+  echo "${ON_BLUE}LIGHTNING-KERNEL-BUILD menu $menu_version${STD}"
   echo " 1. ${UNDER_LINE}B${STD}uild kernel"
   echo " 2. ${UNDER_LINE}C${STD}lean"
   echo " 3. Make ${UNDER_LINE}f${STD}lashable zip"
