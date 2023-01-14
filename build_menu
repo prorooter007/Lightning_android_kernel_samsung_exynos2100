@@ -28,6 +28,15 @@ STD=`echo -e "\033[0m"`		# Text Clear
  
 # Functions
 
+
+download_kernel(){
+  if [ ! -d $PARENT_DIR/kernel ]; then
+  
+    git clone --branch main https://github.com/prorooter007/android_kernel_samsung_exynos2100 $PARENT_DIR/kernel
+    . $DIR/build_menu
+  fi
+}
+
 toolchain(){
   if [ ! -d $PARENT_DIR/aarch64-linux-android-4.9 ]; then
   
@@ -99,6 +108,7 @@ anykernel3(){
 # Run once
 toolchain
 clang
+download_kernel
 
 build_kernel
 anykernel3
