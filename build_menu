@@ -1,19 +1,33 @@
 #!/bin/bash
-# LIGHTNING-KERNEL-BUILD menu based on afaneh menu
+# LIGHTNING-KERNEL-BUILD
 
 # Variables
-DIR=`readlink -f .`
-OUT_DIR=$DIR/out
-PARENT_DIR=`readlink -f ${DIR}/..`
+DIR="$(pwd)"
+
+PARENT_DIR="$(pwd)"
+
+echo "Cloning dependencies"
+git clone --branch main https://github.com/prorooter007/android_kernel_samsung_exynos2100 kernel
+cd kernel 
+git clone --branch android-9.0.0_r59 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
+git clone https://github.com/afaneh-toolchain/prebuilts_clang_host_linux-x86_clang-r383902 clang-r383902
+git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
+echo "Done"
+KERNEL_DIR=$(pwd)
+OUT_DIR="$(pwd)/out"
+REPACK_DIR="${KERNEL_DIR}/AnyKernel3"
+IMAGE="${KERNEL_DIR}/arch/arm64/boot/Image"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
 
 export PLATFORM_VERSION=11
 export ANDROID_MAJOR_VERSION=r
-export CROSS_COMPILE=$PARENT_DIR/aarch64-linux-android-4.9/bin/aarch64-linux-android-
-export CLANG_TRIPLE=$PARENT_DIR/clang-r383902/bin/aarch64-linux-gnu-
+export CROSS_COMPILE="$(pwd)/aarch64-linux-android-4.9/bin/aarch64-linux-android-"
+export CLANG_TRIPLE="$(pwd)/clang-r383902/bin/aarch64-linux-gnu-"
 export ARCH=arm64
 export SEC_BUILD_CONF_VENDOR_BUILD_OS=13
-export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=$PARENT_DIR/aarch64-linux-android-4.9/bin
-export CLANG_PREBUILT_BIN=$PARENT_DIR/clang-r383902/bin
+export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$(pwd)/aarch64-linux-android-4.9/bin"
+export CLANG_PREBUILT_BIN="$(pwd)/clang-r383902/bin"
 export PATH=$PATH:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$CLANG_PREBUILT_BIN
 export LLVM=1
 KERNEL_MAKE_ENV="LOCALVERSION=-LightningV1"
@@ -26,66 +40,24 @@ BGREEN=`echo -e "\033[1;32m"`	# Bold Green
 UNDER_LINE=`echo -e "\e[4m"`	# Text Under Line
 STD=`echo -e "\033[0m"`		# Text Clear
  
-# Functions
-
-
-download_kernel(){
-  if [ ! -d $PARENT_DIR/kernel ]; then
-  
-    git clone --branch main https://github.com/prorooter007/android_kernel_samsung_exynos2100 $PARENT_DIR/kernel
-    . $DIR/build_menu
-  fi
-}
-
-toolchain(){
-  if [ ! -d $PARENT_DIR/aarch64-linux-android-4.9 ]; then
-  
-    git clone --branch android-9.0.0_r59 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 $PARENT_DIR/aarch64-linux-android-4.9
-    . $DIR/build_menu
-  fi
-}
-
-clang(){
-  if [ ! -d $PARENT_DIR/clang-r383902 ]; then
-    git clone https://github.com/afaneh-toolchain/prebuilts_clang_host_linux-x86_clang-r383902 $PARENT_DIR/clang-r383902
-    . $DIR/build_menu
-  fi
-}
-
-
-clean(){
-  echo "${BGREEN}***** Cleaning in Progress *****${STD}"
-  make clean
-  make mrproper
-  [ -d "$OUT_DIR" ] && rm -rf $OUT_DIR
-  echo "${BGREEN}***** Cleaning Done *****${STD}"
- 
-}
-
-build_kernel(){
   
   echo "${BGREEN}***** Compiling kernel *****${STD}"
   [ ! -d "$OUT_DIR" ] && mkdir $OUT_DIR
   make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV lightning_exynos2100-r9sxxx_defconfig
   make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV
 
-  [ -e $DIR/arch/arm64/boot/Image.gz ] && cp $DIR/arch/arm64/boot/Image.gz $OUT_DIR/Image.gz
-  if [ -e $DIR/arch/arm64/boot/Image ]; then
-    cp $DIR/arch/arm64/boot/Image $OUT_DIR/Image
+  [ -e "$(pwd)/arch/arm64/boot/Image.gz" ] && cp "$(pwd)/arch/arm64/boot/Image.gz" $OUT_DIR/Image.gz
+  if [ -e "$(pwd)/arch/arm64/boot/Image" ]; then
+    cp "$(pwd)/arch/arm64/boot/Image" $OUT_DIR/Image
 
     echo "${BGREEN}***** Ready to Roar *****${STD}"
   fi
-}
 
-anykernel3(){
-  if [ ! -d $PARENT_DIR/AnyKernel3 ]; then
-    git clone https://github.com/osm0sis/AnyKernel3 $PARENT_DIR/AnyKernel3
-  fi
   
-  if [ -e $DIR/arch/arm64/boot/Image ]; then
-    cd $PARENT_DIR/AnyKernel3
+  if [ -e "$(pwd)/arch/arm64/boot/Image" ]; then
+    cd "$(pwd)/AnyKernel3"
     git reset --hard
-    cp $DIR/arch/arm64/boot/Image zImage
+    cp $IMAGE zImage
     sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Lightning kernel by prorooter007/g" anykernel.sh
     sed -i "s/=maguro/=exynos2100-r9sxxx/g" anykernel.sh
     sed -i "s/=toroplus/=/g" anykernel.sh
@@ -99,16 +71,7 @@ anykernel3(){
     sed -i "s/patch_fstab/#patch_fstab/g" anykernel.sh
     sed -i "s/dump_boot/split_boot/g" anykernel.sh
     sed -i "s/write_boot/flash_boot/g" anykernel.sh
-    zip -r9 $PARENT_DIR/exynos2100-r9sxxx_kernel_.zip * -x .git README.md *placeholder
-    cd $DIR
-    curl https://bashupload.com/$PARENT_DIR/exynos2100-r9sxxx_kernel_.zip --data-binary @$PARENT_DIR/exynos2100-r9sxxx_kernel_.zip
+    zip -r9 "$(pwd)/exynos2100-r9sxxx_kernel_.zip" * -x .git README.md *placeholder
+    
+    curl https://bashupload.com/$REPACK_DIR/exynos2100-r9sxxx_kernel_.zip --data-binary @$REPACK_DIR/exynos2100-r9sxxx_kernel_.zip
   fi
-}
-
-# Run once
-download_kernel
-toolchain
-clang
-
-build_kernel
-anykernel3

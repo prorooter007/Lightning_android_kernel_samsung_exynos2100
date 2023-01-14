@@ -11,6 +11,8 @@ jobs:
            git config --global user.email "shreyashwasnik112@gmail.com"
            git config --global color.ui false
            git clone https://github.com/akhilnarang/scripts && cd scripts && bash setup/android_build_env.sh && cd ..
+           mkdir predator
+           cd predator
            wget https://raw.githubusercontent.com/prorooter007/android_kernel_samsung_exynos2100/main/build_menu
            source build_menu
    parallelism: 4
