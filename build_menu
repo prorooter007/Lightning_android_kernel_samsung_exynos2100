@@ -110,8 +110,5 @@ download_kernel
 toolchain
 clang
 
-cd
-cd $PARENT_DIR/kernel 
-
 build_kernel
 anykernel3
