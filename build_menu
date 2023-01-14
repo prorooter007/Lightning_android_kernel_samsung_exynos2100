@@ -106,9 +106,12 @@ anykernel3(){
 }
 
 # Run once
+download_kernel
 toolchain
 clang
-download_kernel
+
+cd
+cd $PARENT_DIR/kernel 
 
 build_kernel
 anykernel3
