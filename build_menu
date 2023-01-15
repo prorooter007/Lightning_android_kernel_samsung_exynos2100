@@ -59,7 +59,7 @@ STD=`echo -e "\033[0m"`		# Text Clear
     git reset --hard
     cp $IMAGE zImage
     sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Lightning kernel by prorooter007/g" anykernel.sh
-    sed -i "s/=maguro/=exynos2100-r9sxxx/g" anykernel.sh
+    sed -i "s/=maguro/=r9s/g" anykernel.sh
     sed -i "s/=toroplus/=/g" anykernel.sh
     sed -i "s/=toro/=/g" anykernel.sh
     sed -i "s/=tuna/=/g" anykernel.sh
