@@ -33,7 +33,6 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/kmod.h>
-#include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/mempolicy.h>
 #include <linux/mm.h>
@@ -162,6 +161,12 @@ struct cpuset {
 	int use_parent_ecpus;
 	int child_ecpus_count;
 };
+
+#define CS_CGROUP_COUNT	20
+static struct cpuset requested_cs[CS_CGROUP_COUNT];
+static int cs_count;
+
+#define req_cs(cs)	(requested_cs[cs->css.id - 1])
 
 /*
  * Partition root states:
@@ -335,17 +340,6 @@ static struct cpuset top_cpuset = {
  */
 
 DEFINE_STATIC_PERCPU_RWSEM(cpuset_rwsem);
-
-void cpuset_read_lock(void)
-{
-	percpu_down_read(&cpuset_rwsem);
-}
-
-void cpuset_read_unlock(void)
-{
-	percpu_up_read(&cpuset_rwsem);
-}
-
 static DEFINE_SPINLOCK(callback_lock);
 
 static struct workqueue_struct *cpuset_migrate_mm_wq;
@@ -1058,18 +1052,10 @@ static void update_tasks_cpumask(struct cpuset *cs)
 {
 	struct css_task_iter it;
 	struct task_struct *task;
-	bool top_cs = cs == &top_cpuset;
 
 	css_task_iter_start(&cs->css, 0, &it);
-	while ((task = css_task_iter_next(&it))) {
-		/*
-		 * Percpu kthreads in top_cpuset are ignored
-		 */
-		if (top_cs && (task->flags & PF_KTHREAD) &&
-		    kthread_is_per_cpu(task))
-			continue;
+	while ((task = css_task_iter_next(&it)))
 		set_cpus_allowed_ptr(task, cs->effective_cpus);
-	}
 	css_task_iter_end(&it);
 }
 
@@ -1090,10 +1076,10 @@ static void compute_effective_cpumask(struct cpumask *new_cpus,
 	if (parent->nr_subparts_cpus) {
 		cpumask_or(new_cpus, parent->effective_cpus,
 			   parent->subparts_cpus);
-		cpumask_and(new_cpus, new_cpus, cs->cpus_allowed);
+		cpumask_and(new_cpus, new_cpus, req_cs(cs).cpus_allowed);
 		cpumask_and(new_cpus, new_cpus, cpu_active_mask);
 	} else {
-		cpumask_and(new_cpus, cs->cpus_allowed, parent->effective_cpus);
+		cpumask_and(new_cpus, req_cs(cs).cpus_allowed, parent->effective_cpus);
 	}
 }
 
@@ -1482,15 +1468,10 @@ static void update_sibling_cpumasks(struct cpuset *parent, struct cpuset *cs,
 	struct cpuset *sibling;
 	struct cgroup_subsys_state *pos_css;
 
-	percpu_rwsem_assert_held(&cpuset_rwsem);
-
 	/*
 	 * Check all its siblings and call update_cpumasks_hier()
 	 * if their use_parent_ecpus flag is set in order for them
 	 * to use the right effective_cpus value.
-	 *
-	 * The update_cpumasks_hier() function may sleep. So we have to
-	 * release the RCU read lock before calling it.
 	 */
 	rcu_read_lock();
 	cpuset_for_each_child(sibling, pos_css, parent) {
@@ -1498,13 +1479,8 @@ static void update_sibling_cpumasks(struct cpuset *parent, struct cpuset *cs,
 			continue;
 		if (!sibling->use_parent_ecpus)
 			continue;
-		if (!css_tryget_online(&sibling->css))
-			continue;
 
-		rcu_read_unlock();
 		update_cpumasks_hier(sibling, tmp);
-		rcu_read_lock();
-		css_put(&sibling->css);
 	}
 	rcu_read_unlock();
 }
@@ -1572,12 +1548,14 @@ static int update_cpumask(struct cpuset *cs, struct cpuset *trialcs,
 
 	spin_lock_irq(&callback_lock);
 	cpumask_copy(cs->cpus_allowed, trialcs->cpus_allowed);
+	cpumask_copy(req_cs(cs).cpus_allowed, trialcs->cpus_allowed);
 
 	/*
 	 * Make sure that subparts_cpus is a subset of cpus_allowed.
 	 */
 	if (cs->nr_subparts_cpus) {
-		cpumask_and(cs->subparts_cpus, cs->subparts_cpus, cs->cpus_allowed);
+		cpumask_andnot(cs->subparts_cpus, cs->subparts_cpus,
+			       cs->cpus_allowed);
 		cs->nr_subparts_cpus = cpumask_weight(cs->subparts_cpus);
 	}
 	spin_unlock_irq(&callback_lock);
@@ -2023,7 +2001,12 @@ static int update_prstate(struct cpuset *cs, int val)
 		update_flag(CS_CPU_EXCLUSIVE, cs, 0);
 	}
 
-	update_tasks_cpumask(parent);
+	/*
+	 * Update cpumask of parent's tasks except when it is the top
+	 * cpuset as some system daemons cannot be mapped to other CPUs.
+	 */
+	if (parent != &top_cpuset)
+		update_tasks_cpumask(parent);
 
 	if (parent->child_ecpus_count)
 		update_sibling_cpumasks(parent, cs, &tmp);
@@ -2208,7 +2191,6 @@ static void cpuset_attach(struct cgroup_taskset *tset)
 	cgroup_taskset_first(tset, &css);
 	cs = css_cs(css);
 
-	lockdep_assert_cpus_held();	/* see cgroup_attach_lock() */
 	percpu_down_write(&cpuset_rwsem);
 
 	/* prepare for attach */
@@ -2737,6 +2719,11 @@ cpuset_css_alloc(struct cgroup_subsys_state *parent_css)
 {
 	struct cpuset *cs;
 
+	if (++cs_count > CS_CGROUP_COUNT) {
+		pr_err("%s: too many cpuset groups(%d)\n", __func__, cs_count);
+		return ERR_PTR(-ENOMEM);
+	}
+
 	if (!parent_css)
 		return &top_cpuset.css;
 
@@ -2818,6 +2805,7 @@ static int cpuset_css_online(struct cgroup_subsys_state *css)
 	cs->effective_mems = parent->mems_allowed;
 	cpumask_copy(cs->cpus_allowed, parent->cpus_allowed);
 	cpumask_copy(cs->effective_cpus, parent->cpus_allowed);
+	cpumask_copy(req_cs(cs).cpus_allowed, parent->cpus_allowed);
 	spin_unlock_irq(&callback_lock);
 out_unlock:
 	percpu_up_write(&cpuset_rwsem);
@@ -2928,6 +2916,13 @@ struct cgroup_subsys cpuset_cgrp_subsys = {
 
 int __init cpuset_init(void)
 {
+	int i;
+
+	for (i = 0; i < CS_CGROUP_COUNT; i++) {
+		BUG_ON(!alloc_cpumask_var(&requested_cs[i].cpus_allowed, GFP_KERNEL));
+		cpumask_setall(requested_cs[i].cpus_allowed);
+	}
+
 	BUG_ON(percpu_init_rwsem(&cpuset_rwsem));
 
 	BUG_ON(!alloc_cpumask_var(&top_cpuset.cpus_allowed, GFP_KERNEL));
@@ -3292,11 +3287,8 @@ static struct notifier_block cpuset_track_online_nodes_nb = {
  */
 void __init cpuset_init_smp(void)
 {
-	/*
-	 * cpus_allowd/mems_allowed set to v2 values in the initial
-	 * cpuset_bind() call will be reset to v1 values in another
-	 * cpuset_bind() call when v1 cpuset is mounted.
-	 */
+	cpumask_copy(top_cpuset.cpus_allowed, cpu_active_mask);
+	top_cpuset.mems_allowed = node_states[N_MEMORY];
 	top_cpuset.old_mems_allowed = top_cpuset.mems_allowed;
 
 	cpumask_copy(top_cpuset.effective_cpus, cpu_active_mask);

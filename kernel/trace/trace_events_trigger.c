@@ -940,16 +940,6 @@ static void
 traceon_trigger(struct event_trigger_data *data, void *rec,
 		struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file) {
-		if (tracer_tracing_is_on(file->tr))
-			return;
-
-		tracer_tracing_on(file->tr);
-		return;
-	}
-
 	if (tracing_is_on())
 		return;
 
@@ -960,15 +950,8 @@ static void
 traceon_count_trigger(struct event_trigger_data *data, void *rec,
 		      struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file) {
-		if (tracer_tracing_is_on(file->tr))
-			return;
-	} else {
-		if (tracing_is_on())
-			return;
-	}
+	if (tracing_is_on())
+		return;
 
 	if (!data->count)
 		return;
@@ -976,26 +959,13 @@ traceon_count_trigger(struct event_trigger_data *data, void *rec,
 	if (data->count != -1)
 		(data->count)--;
 
-	if (file)
-		tracer_tracing_on(file->tr);
-	else
-		tracing_on();
+	tracing_on();
 }
 
 static void
 traceoff_trigger(struct event_trigger_data *data, void *rec,
 		 struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file) {
-		if (!tracer_tracing_is_on(file->tr))
-			return;
-
-		tracer_tracing_off(file->tr);
-		return;
-	}
-
 	if (!tracing_is_on())
 		return;
 
@@ -1006,15 +976,8 @@ static void
 traceoff_count_trigger(struct event_trigger_data *data, void *rec,
 		       struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file) {
-		if (!tracer_tracing_is_on(file->tr))
-			return;
-	} else {
-		if (!tracing_is_on())
-			return;
-	}
+	if (!tracing_is_on())
+		return;
 
 	if (!data->count)
 		return;
@@ -1022,10 +985,7 @@ traceoff_count_trigger(struct event_trigger_data *data, void *rec,
 	if (data->count != -1)
 		(data->count)--;
 
-	if (file)
-		tracer_tracing_off(file->tr);
-	else
-		tracing_off();
+	tracing_off();
 }
 
 static int
@@ -1219,14 +1179,7 @@ static void
 stacktrace_trigger(struct event_trigger_data *data, void *rec,
 		   struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-	unsigned long flags;
-
-	if (file) {
-		local_save_flags(flags);
-		__trace_stack(file->tr, flags, STACK_SKIP, preempt_count());
-	} else
-		trace_dump_stack(STACK_SKIP);
+	trace_dump_stack(STACK_SKIP);
 }
 
 static void

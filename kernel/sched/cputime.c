@@ -2,6 +2,7 @@
 /*
  * Simple CPU accounting cgroup controller
  */
+#include <linux/cpufreq_times.h>
 #include "sched.h"
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
@@ -129,6 +130,9 @@ void account_user_time(struct task_struct *p, u64 cputime)
 
 	/* Account for user time used */
 	acct_account_cputime(p);
+
+	/* Account power usage for user time */
+	cpufreq_acct_update_power(p, cputime);
 }
 
 /*
@@ -147,10 +151,10 @@ void account_guest_time(struct task_struct *p, u64 cputime)
 
 	/* Add guest time to cpustat. */
 	if (task_nice(p) > 0) {
-		task_group_account_field(p, CPUTIME_NICE, cputime);
+		cpustat[CPUTIME_NICE] += cputime;
 		cpustat[CPUTIME_GUEST_NICE] += cputime;
 	} else {
-		task_group_account_field(p, CPUTIME_USER, cputime);
+		cpustat[CPUTIME_USER] += cputime;
 		cpustat[CPUTIME_GUEST] += cputime;
 	}
 }
@@ -173,6 +177,9 @@ void account_system_index_time(struct task_struct *p,
 
 	/* Account for system time used */
 	acct_account_cputime(p);
+
+	/* Account power usage for system time */
+	cpufreq_acct_update_power(p, cputime);
 }
 
 /*
@@ -464,6 +471,7 @@ void thread_group_cputime_adjusted(struct task_struct *p, u64 *ut, u64 *st)
 	*ut = cputime.utime;
 	*st = cputime.stime;
 }
+EXPORT_SYMBOL_GPL(thread_group_cputime_adjusted);
 
 #else /* !CONFIG_VIRT_CPU_ACCOUNTING_NATIVE: */
 
@@ -678,6 +686,8 @@ void thread_group_cputime_adjusted(struct task_struct *p, u64 *ut, u64 *st)
 	thread_group_cputime(p, &cputime);
 	cputime_adjust(&cputime, &p->signal->prev_cputime, ut, st);
 }
+EXPORT_SYMBOL_GPL(thread_group_cputime_adjusted);
+
 #endif /* !CONFIG_VIRT_CPU_ACCOUNTING_NATIVE */
 
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN

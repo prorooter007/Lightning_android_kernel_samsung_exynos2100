@@ -1307,7 +1307,6 @@ static int ftrace_add_mod(struct trace_array *tr,
 	if (!ftrace_mod)
 		return -ENOMEM;
 
-	INIT_LIST_HEAD(&ftrace_mod->list);
 	ftrace_mod->func = kstrdup(func, GFP_KERNEL);
 	ftrace_mod->module = kstrdup(module, GFP_KERNEL);
 	ftrace_mod->enable = enable;
@@ -2521,14 +2520,14 @@ struct dyn_ftrace *ftrace_rec_iter_record(struct ftrace_rec_iter *iter)
 }
 
 static int
-ftrace_nop_initialize(struct module *mod, struct dyn_ftrace *rec)
+ftrace_code_disable(struct module *mod, struct dyn_ftrace *rec)
 {
 	int ret;
 
 	if (unlikely(ftrace_disabled))
 		return 0;
 
-	ret = ftrace_init_nop(mod, rec);
+	ret = ftrace_make_nop(mod, rec, MCOUNT_ADDR);
 	if (ret) {
 		ftrace_bug_type = FTRACE_BUG_INIT;
 		ftrace_bug(ret, rec);
@@ -2732,16 +2731,6 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
 		command |= FTRACE_UPDATE_CALLS;
 
 	ftrace_startup_enable(command);
-
-	/*
-	 * If ftrace is in an undefined state, we just remove ops from list
-	 * to prevent the NULL pointer, instead of totally rolling it back and
-	 * free trampoline, because those actions could cause further damage.
-	 */
-	if (unlikely(ftrace_disabled)) {
-		__unregister_ftrace_function(ops);
-		return -ENODEV;
-	}
 
 	ops->flags &= ~FTRACE_OPS_FL_ADDING;
 
@@ -2980,7 +2969,7 @@ static int ftrace_update_code(struct module *mod, struct ftrace_page *new_pgs)
 			 * to the NOP instructions.
 			 */
 			if (!__is_defined(CC_USING_NOP_MCOUNT) &&
-			    !ftrace_nop_initialize(mod, p))
+			    !ftrace_code_disable(mod, p))
 				break;
 
 			update_cnt++;
@@ -3018,7 +3007,7 @@ static int ftrace_allocate_records(struct ftrace_page *pg, int count)
 		/* if we can't allocate this size, try something smaller */
 		if (!order)
 			return -ENOMEM;
-		order--;
+		order >>= 1;
 		goto again;
 	}
 
@@ -5085,12 +5074,8 @@ int ftrace_regex_release(struct inode *inode, struct file *file)
 
 		if (filter_hash) {
 			orig_hash = &iter->ops->func_hash->filter_hash;
-			if (iter->tr) {
-				if (list_empty(&iter->tr->mod_trace))
-					iter->hash->flags &= ~FTRACE_HASH_FL_MOD;
-				else
-					iter->hash->flags |= FTRACE_HASH_FL_MOD;
-			}
+			if (iter->tr && !list_empty(&iter->tr->mod_trace))
+				iter->hash->flags |= FTRACE_HASH_FL_MOD;
 		} else
 			orig_hash = &iter->ops->func_hash->notrace_hash;
 
@@ -5615,9 +5600,9 @@ static int ftrace_cmp_ips(const void *a, const void *b)
 	return 0;
 }
 
-static int ftrace_process_locs(struct module *mod,
-			       unsigned long *start,
-			       unsigned long *end)
+static int __norecordmcount ftrace_process_locs(struct module *mod,
+						unsigned long *start,
+						unsigned long *end)
 {
 	struct ftrace_page *start_pg;
 	struct ftrace_page *pg;
@@ -6260,7 +6245,7 @@ void __init ftrace_init(void)
 	}
 
 	pr_info("ftrace: allocating %ld entries in %ld pages\n",
-		count, DIV_ROUND_UP(count, ENTRIES_PER_PAGE));
+		count, count / ENTRIES_PER_PAGE + 1);
 
 	last_ftrace_enabled = ftrace_enabled = 1;
 
@@ -6351,7 +6336,7 @@ __ftrace_ops_list_func(unsigned long ip, unsigned long parent_ip,
 	struct ftrace_ops *op;
 	int bit;
 
-	bit = trace_test_and_set_recursion(TRACE_LIST_START);
+	bit = trace_test_and_set_recursion(TRACE_LIST_START, TRACE_LIST_MAX);
 	if (bit < 0)
 		return;
 
@@ -6426,7 +6411,7 @@ static void ftrace_ops_assist_func(unsigned long ip, unsigned long parent_ip,
 {
 	int bit;
 
-	bit = trace_test_and_set_recursion(TRACE_LIST_START);
+	bit = trace_test_and_set_recursion(TRACE_LIST_START, TRACE_LIST_MAX);
 	if (bit < 0)
 		return;
 
