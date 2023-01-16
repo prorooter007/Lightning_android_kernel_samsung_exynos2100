@@ -949,14 +949,14 @@ nj_release(struct tiger_hw *card)
 		nj_disable_hwirq(card);
 		mode_tiger(&card->bc[0], ISDN_P_NONE);
 		mode_tiger(&card->bc[1], ISDN_P_NONE);
-		spin_unlock_irqrestore(&card->lock, flags);
 		card->isac.release(&card->isac);
+		spin_unlock_irqrestore(&card->lock, flags);
 		release_region(card->base, card->base_s);
 		card->base_s = 0;
 	}
 	if (card->irq > 0)
 		free_irq(card->irq, card);
-	if (device_is_registered(&card->isac.dch.dev.dev))
+	if (card->isac.dch.dev.dev.class)
 		mISDN_unregister_device(&card->isac.dch.dev);
 
 	for (i = 0; i < 2; i++) {

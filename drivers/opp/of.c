@@ -95,7 +95,15 @@ static struct dev_pm_opp *_find_opp_of_np(struct opp_table *opp_table,
 static struct device_node *of_parse_required_opp(struct device_node *np,
 						 int index)
 {
-	return of_parse_phandle(np, "required-opps", index);
+	struct device_node *required_np;
+
+	required_np = of_parse_phandle(np, "required-opps", index);
+	if (unlikely(!required_np)) {
+		pr_err("%s: Unable to parse required-opps: %pOF, index: %d\n",
+		       __func__, np, index);
+	}
+
+	return required_np;
 }
 
 /* The caller must call dev_pm_opp_put_opp_table() after the table is used */
@@ -639,7 +647,7 @@ free_required_opps:
 free_opp:
 	_opp_free(new_opp);
 
-	return ret ? ERR_PTR(ret) : NULL;
+	return ERR_PTR(ret);
 }
 
 /* Initializes OPP tables based on new bindings */
@@ -650,15 +658,17 @@ static int _of_add_opp_table_v2(struct device *dev, struct opp_table *opp_table)
 	struct dev_pm_opp *opp;
 
 	/* OPP table is already initialized for the device */
-	mutex_lock(&opp_table->lock);
 	if (opp_table->parsed_static_opps) {
-		opp_table->parsed_static_opps++;
-		mutex_unlock(&opp_table->lock);
+		kref_get(&opp_table->list_kref);
 		return 0;
 	}
 
-	opp_table->parsed_static_opps = 1;
-	mutex_unlock(&opp_table->lock);
+	/*
+	 * Re-initialize list_kref every time we add static OPPs to the OPP
+	 * table as the reference count may be 0 after the last tie static OPPs
+	 * were removed.
+	 */
+	kref_init(&opp_table->list_kref);
 
 	/* We have opp-table node now, iterate over it and add OPPs */
 	for_each_available_child_of_node(opp_table->np, np) {
@@ -668,7 +678,7 @@ static int _of_add_opp_table_v2(struct device *dev, struct opp_table *opp_table)
 			dev_err(dev, "%s: Failed to add OPP, %d\n", __func__,
 				ret);
 			of_node_put(np);
-			goto remove_static_opp;
+			goto put_list_kref;
 		} else if (opp) {
 			count++;
 		}
@@ -678,7 +688,7 @@ static int _of_add_opp_table_v2(struct device *dev, struct opp_table *opp_table)
 	if (!count) {
 		dev_err(dev, "%s: no supported OPPs", __func__);
 		ret = -ENOENT;
-		goto remove_static_opp;
+		goto put_list_kref;
 	}
 
 	list_for_each_entry(opp, &opp_table->opp_list, node)
@@ -689,16 +699,18 @@ static int _of_add_opp_table_v2(struct device *dev, struct opp_table *opp_table)
 		dev_err(dev, "Not all nodes have performance state set (%d: %d)\n",
 			count, pstate_count);
 		ret = -ENOENT;
-		goto remove_static_opp;
+		goto put_list_kref;
 	}
 
 	if (pstate_count)
 		opp_table->genpd_performance_state = true;
 
+	opp_table->parsed_static_opps = true;
+
 	return 0;
 
-remove_static_opp:
-	_opp_remove_all_static(opp_table);
+put_list_kref:
+	_put_opp_list_kref(opp_table);
 
 	return ret;
 }
@@ -726,10 +738,6 @@ static int _of_add_opp_table_v1(struct device *dev, struct opp_table *opp_table)
 		return -EINVAL;
 	}
 
-	mutex_lock(&opp_table->lock);
-	opp_table->parsed_static_opps = 1;
-	mutex_unlock(&opp_table->lock);
-
 	val = prop->value;
 	while (nr) {
 		unsigned long freq = be32_to_cpup(val++) * 1000;
@@ -739,7 +747,7 @@ static int _of_add_opp_table_v1(struct device *dev, struct opp_table *opp_table)
 		if (ret) {
 			dev_err(dev, "%s: Failed to add OPP %ld (%d)\n",
 				__func__, freq, ret);
-			_opp_remove_all_static(opp_table);
+			_put_opp_list_kref(opp_table);
 			return ret;
 		}
 		nr -= 2;
@@ -988,7 +996,7 @@ int of_get_required_opp_performance_state(struct device_node *np, int index)
 
 	required_np = of_parse_required_opp(np, index);
 	if (!required_np)
-		return -ENODEV;
+		return -EINVAL;
 
 	opp_table = _find_table_of_opp_np(required_np);
 	if (IS_ERR(opp_table)) {

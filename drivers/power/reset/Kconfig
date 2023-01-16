@@ -93,8 +93,14 @@ config POWER_RESET_GPIO_RESTART
 	  If your board needs a GPIO high/low to restart, say Y and
 	  create a binding in your devicetree.
 
+config POWER_RESET_EXYNOS
+	tristate "Samsung Exynos power-off driver"
+	depends on ARCH_EXYNOS
+	help
+	  Reboot support for Samsung Exynos boards.
+
 config POWER_RESET_HISI
-	bool "Hisilicon power-off driver"
+	tristate "Hisilicon power-off driver"
 	depends on ARCH_HISI
 	help
 	  Reboot support for Hisilicon boards.
@@ -238,7 +244,7 @@ config SYSCON_REBOOT_MODE
 	  action according to the mode.
 
 config POWER_RESET_SC27XX
-	bool "Spreadtrum SC27xx PMIC power-off driver"
+	tristate "Spreadtrum SC27xx PMIC power-off driver"
 	depends on MFD_SC27XX_PMIC || COMPILE_TEST
 	help
 	  This driver supports powering off a system through

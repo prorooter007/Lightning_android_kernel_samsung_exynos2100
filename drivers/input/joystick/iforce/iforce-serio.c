@@ -39,7 +39,7 @@ static void iforce_serio_xmit(struct iforce *iforce)
 
 again:
 	if (iforce->xmit.head == iforce->xmit.tail) {
-		iforce_clear_xmit_and_wake(iforce);
+		clear_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags);
 		spin_unlock_irqrestore(&iforce->xmit_lock, flags);
 		return;
 	}
@@ -64,7 +64,7 @@ again:
 	if (test_and_clear_bit(IFORCE_XMIT_AGAIN, iforce->xmit_flags))
 		goto again;
 
-	iforce_clear_xmit_and_wake(iforce);
+	clear_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags);
 
 	spin_unlock_irqrestore(&iforce->xmit_lock, flags);
 }
@@ -169,7 +169,7 @@ static irqreturn_t iforce_serio_irq(struct serio *serio,
 			iforce_serio->cmd_response_len = iforce_serio->len;
 
 			/* Signal that command is done */
-			wake_up_all(&iforce->wait);
+			wake_up(&iforce->wait);
 		} else if (likely(iforce->type)) {
 			iforce_process_packet(iforce, iforce_serio->id,
 					      iforce_serio->data_in,

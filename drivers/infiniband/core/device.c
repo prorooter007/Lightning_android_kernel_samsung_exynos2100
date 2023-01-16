@@ -2438,8 +2438,7 @@ int ib_find_gid(struct ib_device *device, union ib_gid *gid,
 		     ++i) {
 			ret = rdma_query_gid(device, port, i, &tmp_gid);
 			if (ret)
-				continue;
-
+				return ret;
 			if (!memcmp(&tmp_gid, gid, sizeof *gid)) {
 				*port_num = port;
 				if (index)
@@ -2762,18 +2761,10 @@ static int __init ib_core_init(void)
 
 	nldev_init();
 	rdma_nl_register(RDMA_NL_LS, ibnl_ls_cb_table);
-	ret = roce_gid_mgmt_init();
-	if (ret) {
-		pr_warn("Couldn't init RoCE GID management\n");
-		goto err_parent;
-	}
+	roce_gid_mgmt_init();
 
 	return 0;
 
-err_parent:
-	rdma_nl_unregister(RDMA_NL_LS);
-	nldev_exit();
-	unregister_pernet_device(&rdma_dev_net_ops);
 err_compat:
 	unregister_blocking_lsm_notifier(&ibdev_lsm_nb);
 err_sa:

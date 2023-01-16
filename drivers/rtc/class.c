@@ -26,15 +26,6 @@ struct class *rtc_class;
 static void rtc_device_release(struct device *dev)
 {
 	struct rtc_device *rtc = to_rtc_device(dev);
-	struct timerqueue_head *head = &rtc->timerqueue;
-	struct timerqueue_node *node;
-
-	mutex_lock(&rtc->ops_lock);
-	while ((node = timerqueue_getnext(head)))
-		timerqueue_del(head, node);
-	mutex_unlock(&rtc->ops_lock);
-
-	cancel_work_sync(&rtc->irqwork);
 
 	ida_simple_remove(&rtc_ida, rtc->id);
 	kfree(rtc);
@@ -383,6 +374,11 @@ int __rtc_register_device(struct module *owner, struct rtc_device *rtc)
 	rtc->registered = true;
 	dev_info(rtc->dev.parent, "registered as %s\n",
 		 dev_name(&rtc->dev));
+
+#ifdef CONFIG_RTC_HCTOSYS_DEVICE
+	if (!strcmp(dev_name(&rtc->dev), CONFIG_RTC_HCTOSYS_DEVICE))
+		rtc_hctosys();
+#endif
 
 	return 0;
 }

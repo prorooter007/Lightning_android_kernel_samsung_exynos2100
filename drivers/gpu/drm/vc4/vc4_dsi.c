@@ -791,9 +791,11 @@ static bool vc4_dsi_encoder_mode_fixup(struct drm_encoder *encoder,
 	/* Find what divider gets us a faster clock than the requested
 	 * pixel clock.
 	 */
-	for (divider = 1; divider < 255; divider++) {
-		if (parent_rate / (divider + 1) < pll_clock)
+	for (divider = 1; divider < 8; divider++) {
+		if (parent_rate / divider < pll_clock) {
+			divider--;
 			break;
+		}
 	}
 
 	/* Now that we've picked a PLL divider, calculate back to its
@@ -829,7 +831,7 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	unsigned long phy_clock;
 	int ret;
 
-	ret = pm_runtime_resume_and_get(dev);
+	ret = pm_runtime_get_sync(dev);
 	if (ret) {
 		DRM_ERROR("Failed to runtime PM enable on DSI%d\n", dsi->port);
 		return;

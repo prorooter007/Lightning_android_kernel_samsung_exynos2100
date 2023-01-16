@@ -160,7 +160,7 @@ static void uart_port_dtr_rts(struct uart_port *uport, int raise)
 	int RTS_after_send = !!(uport->rs485.flags & SER_RS485_RTS_AFTER_SEND);
 
 	if (raise) {
-		if (rs485_on && RTS_after_send) {
+		if (rs485_on && !RTS_after_send) {
 			uart_set_mctrl(uport, TIOCM_DTR);
 			uart_clear_mctrl(uport, TIOCM_RTS);
 		} else {
@@ -169,7 +169,7 @@ static void uart_port_dtr_rts(struct uart_port *uport, int raise)
 	} else {
 		unsigned int clear = TIOCM_DTR;
 
-		clear |= (!rs485_on || RTS_after_send) ? TIOCM_RTS : 0;
+		clear |= (!rs485_on || !RTS_after_send) ? TIOCM_RTS : 0;
 		uart_clear_mctrl(uport, clear);
 	}
 }
@@ -182,7 +182,7 @@ static int uart_port_startup(struct tty_struct *tty, struct uart_state *state,
 		int init_hw)
 {
 	struct uart_port *uport = uart_port_check(state);
-	unsigned long page;
+	void *addr;
 	unsigned long flags = 0;
 	int retval = 0;
 
@@ -198,13 +198,13 @@ static int uart_port_startup(struct tty_struct *tty, struct uart_state *state,
 	 * Initialise and allocate the transmit and temporary
 	 * buffer.
 	 */
-	page = get_zeroed_page(GFP_KERNEL);
-	if (!page)
+	addr = alloc_pages_exact(PAGE_SIZE * 4, GFP_KERNEL|__GFP_ZERO);
+	if (!addr)
 		return -ENOMEM;
 
 	uart_port_lock(state, flags);
 	if (!state->xmit.buf) {
-		state->xmit.buf = (unsigned char *) page;
+		state->xmit.buf = (unsigned char *) addr;
 		uart_circ_clear(&state->xmit);
 		uart_port_unlock(uport, flags);
 	} else {
@@ -213,18 +213,15 @@ static int uart_port_startup(struct tty_struct *tty, struct uart_state *state,
 		 * Do not free() the page under the port lock, see
 		 * uart_shutdown().
 		 */
-		free_page(page);
+
+		free_pages_exact(addr, PAGE_SIZE * 4);
 	}
 
 	retval = uport->ops->startup(uport);
 	if (retval == 0) {
 		if (uart_console(uport) && uport->cons->cflag) {
 			tty->termios.c_cflag = uport->cons->cflag;
-			tty->termios.c_ispeed = uport->cons->ispeed;
-			tty->termios.c_ospeed = uport->cons->ospeed;
 			uport->cons->cflag = 0;
-			uport->cons->ispeed = 0;
-			uport->cons->ospeed = 0;
 		}
 		/*
 		 * Initialise the hardware port settings.
@@ -292,11 +289,8 @@ static void uart_shutdown(struct tty_struct *tty, struct uart_state *state)
 		/*
 		 * Turn off DTR and RTS early.
 		 */
-		if (uport && uart_console(uport) && tty) {
+		if (uport && uart_console(uport) && tty)
 			uport->cons->cflag = tty->termios.c_cflag;
-			uport->cons->ispeed = tty->termios.c_ispeed;
-			uport->cons->ospeed = tty->termios.c_ospeed;
-		}
 
 		if (!tty || C_HUPCL(tty))
 			uart_port_dtr_rts(uport, 0);
@@ -323,7 +317,7 @@ static void uart_shutdown(struct tty_struct *tty, struct uart_state *state)
 	uart_port_unlock(uport, flags);
 
 	if (xmit_buf)
-		free_page((unsigned long)xmit_buf);
+		free_pages_exact((void *)xmit_buf, PAGE_SIZE * 4);
 }
 
 /**
@@ -1573,7 +1567,6 @@ static void uart_tty_port_shutdown(struct tty_port *port)
 {
 	struct uart_state *state = container_of(port, struct uart_state, port);
 	struct uart_port *uport = uart_port_check(state);
-	char *buf;
 
 	/*
 	 * At this point, we stop accepting input.  To do this, we
@@ -1595,18 +1588,8 @@ static void uart_tty_port_shutdown(struct tty_port *port)
 	 */
 	tty_port_set_suspended(port, 0);
 
-	/*
-	 * Free the transmit buffer.
-	 */
-	spin_lock_irq(&uport->lock);
-	buf = state->xmit.buf;
-	state->xmit.buf = NULL;
-	spin_unlock_irq(&uport->lock);
-
-	if (buf)
-		free_page((unsigned long)buf);
-
 	uart_change_pm(state, UART_PM_STATE_OFF);
+
 }
 
 static void uart_wait_until_sent(struct tty_struct *tty, int timeout)
@@ -2128,11 +2111,8 @@ uart_set_options(struct uart_port *port, struct console *co,
 	 * Allow the setting of the UART parameters with a NULL console
 	 * too:
 	 */
-	if (co) {
+	if (co)
 		co->cflag = termios.c_cflag;
-		co->ispeed = termios.c_ispeed;
-		co->ospeed = termios.c_ospeed;
-	}
 
 	return 0;
 }
@@ -2266,8 +2246,6 @@ int uart_resume_port(struct uart_driver *drv, struct uart_port *uport)
 		 */
 		memset(&termios, 0, sizeof(struct ktermios));
 		termios.c_cflag = uport->cons->cflag;
-		termios.c_ispeed = uport->cons->ispeed;
-		termios.c_ospeed = uport->cons->ospeed;
 
 		/*
 		 * If that's unset, use the tty termios setting.
@@ -2395,8 +2373,7 @@ uart_configure_port(struct uart_driver *drv, struct uart_state *state,
 		 * We probably don't need a spinlock around this, but
 		 */
 		spin_lock_irqsave(&port->lock, flags);
-		port->mctrl &= TIOCM_DTR;
-		port->ops->set_mctrl(port, port->mctrl);
+		port->ops->set_mctrl(port, port->mctrl & TIOCM_DTR);
 		spin_unlock_irqrestore(&port->lock, flags);
 
 		/*
@@ -2633,6 +2610,7 @@ struct tty_driver *uart_console_device(struct console *co, int *index)
 	*index = co->index;
 	return p->tty_driver;
 }
+EXPORT_SYMBOL_GPL(uart_console_device);
 
 static ssize_t uart_get_attr_uartclk(struct device *dev,
 	struct device_attribute *attr, char *buf)

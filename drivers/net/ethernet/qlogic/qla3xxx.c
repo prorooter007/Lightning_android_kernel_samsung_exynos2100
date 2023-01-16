@@ -2476,7 +2476,6 @@ static netdev_tx_t ql3xxx_send(struct sk_buff *skb,
 					     skb_shinfo(skb)->nr_frags);
 	if (tx_cb->seg_count == -1) {
 		netdev_err(ndev, "%s: invalid segment count!\n", __func__);
-		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
 
@@ -3496,18 +3495,19 @@ static int ql_adapter_up(struct ql3_adapter *qdev)
 
 	spin_lock_irqsave(&qdev->hw_lock, hw_flags);
 
-	if (!ql_wait_for_drvr_lock(qdev)) {
+	err = ql_wait_for_drvr_lock(qdev);
+	if (err) {
+		err = ql_adapter_initialize(qdev);
+		if (err) {
+			netdev_err(ndev, "Unable to initialize adapter\n");
+			goto err_init;
+		}
+		netdev_err(ndev, "Releasing driver lock\n");
+		ql_sem_unlock(qdev, QL_DRVR_SEM_MASK);
+	} else {
 		netdev_err(ndev, "Could not acquire driver lock\n");
-		err = -ENODEV;
 		goto err_lock;
 	}
-
-	err = ql_adapter_initialize(qdev);
-	if (err) {
-		netdev_err(ndev, "Unable to initialize adapter\n");
-		goto err_init;
-	}
-	ql_sem_unlock(qdev, QL_DRVR_SEM_MASK);
 
 	spin_unlock_irqrestore(&qdev->hw_lock, hw_flags);
 
@@ -3630,8 +3630,7 @@ static void ql_reset_work(struct work_struct *work)
 		qdev->mem_map_registers;
 	unsigned long hw_flags;
 
-	if (test_bit(QL_RESET_PER_SCSI, &qdev->flags) ||
-	    test_bit(QL_RESET_START, &qdev->flags)) {
+	if (test_bit((QL_RESET_PER_SCSI | QL_RESET_START), &qdev->flags)) {
 		clear_bit(QL_LINK_MASTER, &qdev->flags);
 
 		/*

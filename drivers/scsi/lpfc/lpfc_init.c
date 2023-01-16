@@ -6537,7 +6537,7 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	/* Allocate device driver memory */
 	rc = lpfc_mem_alloc(phba, SGL_ALIGN_SZ);
 	if (rc)
-		goto out_destroy_workqueue;
+		return -ENOMEM;
 
 	/* IF Type 2 ports get initialized now. */
 	if (bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) >=
@@ -6911,9 +6911,6 @@ out_free_bsmbx:
 	lpfc_destroy_bootstrap_mbox(phba);
 out_free_mem:
 	lpfc_mem_free(phba);
-out_destroy_workqueue:
-	destroy_workqueue(phba->wq);
-	phba->wq = NULL;
 	return rc;
 }
 

@@ -110,7 +110,7 @@ static ssize_t phys_index_show(struct device *dev,
 	unsigned long phys_index;
 
 	phys_index = mem->start_section_nr / sections_per_block;
-	return sysfs_emit(buf, "%08lx\n", phys_index);
+	return sprintf(buf, "%08lx\n", phys_index);
 }
 
 /*
@@ -120,7 +120,7 @@ static ssize_t phys_index_show(struct device *dev,
 static ssize_t removable_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
-	return sysfs_emit(buf, "%d\n", (int)IS_ENABLED(CONFIG_MEMORY_HOTREMOVE));
+	return sprintf(buf, "%d\n", (int)IS_ENABLED(CONFIG_MEMORY_HOTREMOVE));
 }
 
 /*
@@ -138,17 +138,17 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 	 */
 	switch (mem->state) {
 	case MEM_ONLINE:
-		len = sysfs_emit(buf, "online\n");
+		len = sprintf(buf, "online\n");
 		break;
 	case MEM_OFFLINE:
-		len = sysfs_emit(buf, "offline\n");
+		len = sprintf(buf, "offline\n");
 		break;
 	case MEM_GOING_OFFLINE:
-		len = sysfs_emit(buf, "going-offline\n");
+		len = sprintf(buf, "going-offline\n");
 		break;
 	default:
-		len = sysfs_emit(buf, "ERROR-UNKNOWN-%ld\n",
-				 mem->state);
+		len = sprintf(buf, "ERROR-UNKNOWN-%ld\n",
+				mem->state);
 		WARN_ON(1);
 		break;
 	}
@@ -345,6 +345,44 @@ err:
 	return count;
 }
 
+static int memory_process_operation(struct memory_block *mem, int optype)
+{
+	int ret;
+
+	ret = lock_device_hotplug_sysfs();
+	if (ret)
+		return ret;
+
+	switch (optype) {
+	case MMOP_ONLINE_MOVABLE:
+		mem->online_type = optype;
+		ret = device_online(&mem->dev);
+		break;
+	case MMOP_OFFLINE:
+		ret = device_offline(&mem->dev);
+		break;
+	default:
+		ret = -EINVAL; /* should never happen */
+	}
+
+	unlock_device_hotplug();
+
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+int memory_block_online(struct memory_block *mem)
+{
+	return memory_process_operation(mem, MMOP_ONLINE_MOVABLE);
+}
+
+int memory_block_offline(struct memory_block *mem)
+{
+	return memory_process_operation(mem, MMOP_OFFLINE);
+}
+
 /*
  * phys_device is a bad name for this.  What I really want
  * is a way to differentiate between memory ranges that
@@ -358,7 +396,7 @@ static ssize_t phys_device_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct memory_block *mem = to_memory_block(dev);
-	return sysfs_emit(buf, "%d\n", mem->phys_device);
+	return sprintf(buf, "%d\n", mem->phys_device);
 }
 
 #ifdef CONFIG_MEMORY_HOTREMOVE
@@ -396,7 +434,7 @@ static ssize_t valid_zones_show(struct device *dev,
 		 */
 		if (!test_pages_in_a_zone(start_pfn, start_pfn + nr_pages,
 					  &valid_start_pfn, &valid_end_pfn))
-			return sysfs_emit(buf, "none\n");
+			return sprintf(buf, "none\n");
 		start_pfn = valid_start_pfn;
 		strcat(buf, page_zone(pfn_to_page(start_pfn))->name);
 		goto out;
@@ -429,7 +467,7 @@ static DEVICE_ATTR_RO(removable);
 static ssize_t block_size_bytes_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%lx\n", memory_block_size_bytes());
+	return sprintf(buf, "%lx\n", memory_block_size_bytes());
 }
 
 static DEVICE_ATTR_RO(block_size_bytes);
@@ -442,9 +480,9 @@ static ssize_t auto_online_blocks_show(struct device *dev,
 				       struct device_attribute *attr, char *buf)
 {
 	if (memhp_auto_online)
-		return sysfs_emit(buf, "online\n");
+		return sprintf(buf, "online\n");
 	else
-		return sysfs_emit(buf, "offline\n");
+		return sprintf(buf, "offline\n");
 }
 
 static ssize_t auto_online_blocks_store(struct device *dev,

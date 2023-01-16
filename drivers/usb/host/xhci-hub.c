@@ -171,6 +171,7 @@ static void xhci_common_hub_descriptor(struct xhci_hcd *xhci,
 {
 	u16 temp;
 
+	desc->bPwrOn2PwrGood = 10;	/* xhci section 5.4.9 says 20ms max */
 	desc->bHubContrCurrent = 0;
 
 	desc->bNbrPorts = ports;
@@ -205,7 +206,6 @@ static void xhci_usb2_hub_descriptor(struct usb_hcd *hcd, struct xhci_hcd *xhci,
 	desc->bDescriptorType = USB_DT_HUB;
 	temp = 1 + (ports / 8);
 	desc->bDescLength = USB_DT_HUB_NONVAR_SIZE + 2 * temp;
-	desc->bPwrOn2PwrGood = 10;	/* xhci section 5.4.8 says 20ms */
 
 	/* The Device Removable bits are reported on a byte granularity.
 	 * If the port doesn't exist within that byte, the bit is set to 0.
@@ -258,7 +258,6 @@ static void xhci_usb3_hub_descriptor(struct usb_hcd *hcd, struct xhci_hcd *xhci,
 	xhci_common_hub_descriptor(xhci, desc, ports);
 	desc->bDescriptorType = USB_DT_SS_HUB;
 	desc->bDescLength = USB_DT_SS_HUB_SIZE;
-	desc->bPwrOn2PwrGood = 50;	/* usb 3.1 may fail if less than 100ms */
 
 	/* header decode latency should be zero for roothubs,
 	 * see section 4.23.5.2.
@@ -629,7 +628,6 @@ static int xhci_enter_test_mode(struct xhci_hcd *xhci,
 			continue;
 
 		retval = xhci_disable_slot(xhci, i);
-		xhci_free_virt_device(xhci, i);
 		if (retval)
 			xhci_err(xhci, "Failed to disable slot %d, %d. Enter test mode anyway\n",
 				 i, retval);
@@ -674,7 +672,7 @@ static int xhci_exit_test_mode(struct xhci_hcd *xhci)
 	}
 	pm_runtime_allow(xhci_to_hcd(xhci)->self.controller);
 	xhci->test_mode = 0;
-	return xhci_reset(xhci, XHCI_RESET_SHORT_USEC);
+	return xhci_reset(xhci);
 }
 
 void xhci_set_link_state(struct xhci_hcd *xhci, struct xhci_port *port,
@@ -1000,9 +998,6 @@ static void xhci_get_usb2_port_status(struct xhci_port *port, u32 *status,
 		if (link_state == XDEV_U2)
 			*status |= USB_PORT_STAT_L1;
 		if (link_state == XDEV_U0) {
-			if (bus_state->resume_done[portnum])
-				usb_hcd_end_port_resume(&port->rhub->hcd->self,
-							portnum);
 			bus_state->resume_done[portnum] = 0;
 			clear_bit(portnum, &bus_state->resuming_ports);
 			if (bus_state->suspended_ports & (1 << portnum)) {
@@ -1211,7 +1206,7 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 			}
 			/* In spec software should not attempt to suspend
 			 * a port unless the port reports that it is in the
-			 * enabled (PED = ‘1’,PLS < ‘3’) state.
+			 * enabled (PED = '1',PLS < '3') state.
 			 */
 			temp = readl(ports[wIndex]->addr);
 			if ((temp & PORT_PE) == 0 || (temp & PORT_RESET)
@@ -1343,7 +1338,7 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 				}
 				spin_unlock_irqrestore(&xhci->lock, flags);
 				if (!wait_for_completion_timeout(&bus_state->u3exit_done[wIndex],
-								 msecs_to_jiffies(500)))
+								 msecs_to_jiffies(100)))
 					xhci_dbg(xhci, "missing U0 port change event for port %d\n",
 						 wIndex);
 				spin_lock_irqsave(&xhci->lock, flags);
@@ -1555,17 +1550,6 @@ int xhci_hub_status_data(struct usb_hcd *hcd, char *buf)
 
 	status = bus_state->resuming_ports;
 
-	/*
-	 * SS devices are only visible to roothub after link training completes.
-	 * Keep polling roothubs for a grace period after xHC start
-	 */
-	if (xhci->run_graceperiod) {
-		if (time_before(jiffies, xhci->run_graceperiod))
-			status = 1;
-		else
-			xhci->run_graceperiod = 0;
-	}
-
 	mask = PORT_CSC | PORT_PEC | PORT_OCC | PORT_PLC | PORT_WRC | PORT_CEC;
 
 	/* For each port, did anything change?  If so, set that bit in buf. */
@@ -1610,6 +1594,15 @@ int xhci_bus_suspend(struct usb_hcd *hcd)
 	struct xhci_port **ports;
 	u32 portsc_buf[USB_MAXCHILDREN];
 	bool wake_enabled;
+#ifdef CONFIG_USB_DWC3_EXYNOS
+	int is_port_connect = 0;
+#endif
+
+	if (xhci->xhc_state & XHCI_STATE_REMOVING) {
+		xhci_info(xhci, "%s - Host removing return!\n",
+				__func__);
+		return -ESHUTDOWN;
+	}
 
 	rhub = xhci_get_rhub(hcd);
 	ports = rhub->ports;
@@ -1682,6 +1675,9 @@ retry:
 			if (t1 & PORT_CONNECT) {
 				t2 |= PORT_WKOC_E | PORT_WKDISC_E;
 				t2 &= ~PORT_WKCONN_E;
+#ifdef CONFIG_USB_DWC3_EXYNOS
+				is_port_connect = 1;
+#endif
 			} else {
 				t2 |= PORT_WKOC_E | PORT_WKCONN_E;
 				t2 &= ~PORT_WKDISC_E;
@@ -1719,6 +1715,13 @@ retry:
 		}
 		writel(portsc_buf[port_index], ports[port_index]->addr);
 	}
+
+#ifdef CONFIG_USB_DWC3_EXYNOS
+	xhci_info(xhci, "%s 'HC_STATE_SUSPENDED' portcon: %d main_hcd: %d\n",
+		__func__, is_port_connect, (hcd == xhci->main_hcd));
+
+	xhci_wake_lock(hcd, 0);
+#endif
 	hcd->state = HC_STATE_SUSPENDED;
 	bus_state->next_statechange = jiffies + msecs_to_jiffies(10);
 	spin_unlock_irqrestore(&xhci->lock, flags);
@@ -1769,6 +1772,12 @@ int xhci_bus_resume(struct usb_hcd *hcd)
 	u32 temp, portsc;
 	struct xhci_hub *rhub;
 	struct xhci_port **ports;
+
+	if (xhci->xhc_state & XHCI_STATE_REMOVING) {
+		xhci_info(xhci, "%s - Host removing return!\n",
+				__func__);
+		return -ESHUTDOWN;
+	}
 
 	rhub = xhci_get_rhub(hcd);
 	ports = rhub->ports;
@@ -1869,6 +1878,14 @@ int xhci_bus_resume(struct usb_hcd *hcd)
 	temp = readl(&xhci->op_regs->command);
 
 	spin_unlock_irqrestore(&xhci->lock, flags);
+
+#ifdef CONFIG_USB_DWC3_EXYNOS
+	hcd->state = HC_STATE_RESUMING;
+	xhci_info(xhci, "%s is done, hcd state is 'HC_STATE_RESUMING'\n",__func__);
+
+	xhci_wake_lock(hcd, 1);
+#endif
+
 	return 0;
 }
 

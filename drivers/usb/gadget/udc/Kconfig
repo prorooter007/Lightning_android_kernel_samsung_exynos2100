@@ -311,7 +311,7 @@ source "drivers/usb/gadget/udc/bdc/Kconfig"
 
 config USB_AMD5536UDC
 	tristate "AMD5536 UDC"
-	depends on USB_PCI && HAS_DMA
+	depends on USB_PCI
 	select USB_SNP_CORE
 	help
 	   The AMD5536 UDC is part of the AMD Geode CS5536, an x86 southbridge.
@@ -330,7 +330,6 @@ config USB_AMD5536UDC
 config USB_FSL_QE
 	tristate "Freescale QE/CPM USB Device Controller"
 	depends on FSL_SOC && (QUICC_ENGINE || CPM)
-	depends on !64BIT || BROKEN
 	help
 	   Some of Freescale PowerPC processors have a Full Speed
 	   QE/CPM2 USB controller, which support device mode with 4
@@ -450,7 +449,7 @@ source "drivers/usb/gadget/udc/aspeed-vhub/Kconfig"
 
 config USB_DUMMY_HCD
 	tristate "Dummy HCD (DEVELOPMENT)"
-	depends on USB=y || (USB=m && USB_GADGET=m)
+	depends on USB=y
 	help
 	  This host controller driver emulates USB, looping all data transfer
 	  requests back to a USB "gadget driver" in the same host.  The host
