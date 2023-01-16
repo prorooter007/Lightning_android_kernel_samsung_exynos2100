@@ -44,6 +44,7 @@
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/processor.h>
+#include <asm/scs.h>
 #include <asm/smp_plat.h>
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -52,6 +53,8 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ipi.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/debug.h>
 
 DEFINE_PER_CPU_READ_MOSTLY(int, cpu_number);
 EXPORT_PER_CPU_SYMBOL(cpu_number);
@@ -358,6 +361,9 @@ void cpu_die(void)
 {
 	unsigned int cpu = smp_processor_id();
 
+	/* Save the shadow stack pointer before exiting the idle task */
+	scs_save(current);
+
 	idle_task_exit();
 
 	local_daif_mask();
@@ -412,6 +418,17 @@ static void __init hyp_mode_check(void)
 		pr_info("CPU: All CPU(s) started at EL1\n");
 }
 
+static void __iomem *cpu_pipi_base;
+
+#define CPU_PIPI_BASE		(0xBFFFF540)
+#define CPU_PIPI_OFFSET(i)	(i * 0x4)
+
+static void record_cpu_pipi(int cpu, bool pending)
+{
+	if (cpu_pipi_base)
+		writel_relaxed(pending, cpu_pipi_base + CPU_PIPI_OFFSET(cpu));
+}
+
 void __init smp_cpus_done(unsigned int max_cpus)
 {
 	pr_info("SMP: Total of %d processors activated.\n", num_online_cpus());
@@ -419,6 +436,8 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	hyp_mode_check();
 	apply_alternatives_all();
 	mark_linear_text_alias_ro();
+
+	cpu_pipi_base = ioremap(CPU_PIPI_BASE, SZ_4K);
 }
 
 void __init smp_prepare_boot_cpu(void)
@@ -775,7 +794,13 @@ static const char *ipi_types[NR_IPI] __tracepoint_string = {
 
 static void smp_cross_call(const struct cpumask *target, unsigned int ipinr)
 {
+	int cpu;
+
 	trace_ipi_raise(target, ipi_types[ipinr]);
+
+	for_each_cpu(cpu, target)
+		record_cpu_pipi(cpu, true);
+
 	__smp_cross_call(target, ipinr);
 }
 
@@ -897,6 +922,7 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 		break;
 
 	case IPI_CPU_STOP:
+		trace_android_vh_ipi_stop_rcuidle(regs);
 		irq_enter();
 		local_cpu_stop();
 		irq_exit();
@@ -939,6 +965,8 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 		pr_crit("CPU%u: Unknown IPI message 0x%x\n", cpu, ipinr);
 		break;
 	}
+
+	record_cpu_pipi(cpu, false);
 
 	if ((unsigned)ipinr < NR_IPI)
 		trace_ipi_exit_rcuidle(ipi_types[ipinr]);

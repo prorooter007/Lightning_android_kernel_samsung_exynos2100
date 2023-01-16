@@ -140,7 +140,7 @@
 #endif
 		.endm
 
-		.section ".start", "ax"
+		.section ".start", #alloc, #execinstr
 /*
  * sort out different calling conventions
  */
@@ -165,8 +165,7 @@ start:
 		 * were patching the initial instructions of the kernel, i.e
 		 * had started to exploit this "patch area".
 		 */
-		__initial_nops
-		.rept	5
+		.rept	7
 		__nop
 		.endr
 #ifndef CONFIG_THUMB2_KERNEL
@@ -1274,7 +1273,7 @@ iflush:
 __armv5tej_mmu_cache_flush:
 		tst	r4, #1
 		movne	pc, lr
-1:		mrc	p15, 0, APSR_nzcv, c7, c14, 3	@ test,clean,invalidate D cache
+1:		mrc	p15, 0, r15, c7, c14, 3	@ test,clean,invalidate D cache
 		bne	1b
 		mcr	p15, 0, r0, c7, c5, 0	@ flush I cache
 		mcr	p15, 0, r0, c7, c10, 4	@ drain WB

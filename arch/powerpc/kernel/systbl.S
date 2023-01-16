@@ -25,7 +25,6 @@ sys_call_table:
 #include <asm/syscall_table_64.h>
 #undef __SYSCALL
 #else
-	.p2align	2
 #define __SYSCALL(nr, entry)	.long entry
 #include <asm/syscall_table_32.h>
 #undef __SYSCALL
