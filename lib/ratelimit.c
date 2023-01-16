@@ -26,16 +26,10 @@
  */
 int ___ratelimit(struct ratelimit_state *rs, const char *func)
 {
-	/* Paired with WRITE_ONCE() in .proc_handler().
-	 * Changing two values seperately could be inconsistent
-	 * and some message could be lost.  (See: net_ratelimit_state).
-	 */
-	int interval = READ_ONCE(rs->interval);
-	int burst = READ_ONCE(rs->burst);
 	unsigned long flags;
 	int ret;
 
-	if (!interval)
+	if (!rs->interval)
 		return 1;
 
 	/*
@@ -50,7 +44,7 @@ int ___ratelimit(struct ratelimit_state *rs, const char *func)
 	if (!rs->begin)
 		rs->begin = jiffies;
 
-	if (time_is_before_jiffies(rs->begin + interval)) {
+	if (time_is_before_jiffies(rs->begin + rs->interval)) {
 		if (rs->missed) {
 			if (!(rs->flags & RATELIMIT_MSG_ON_RELEASE)) {
 				printk_deferred(KERN_WARNING
@@ -62,7 +56,7 @@ int ___ratelimit(struct ratelimit_state *rs, const char *func)
 		rs->begin   = jiffies;
 		rs->printed = 0;
 	}
-	if (burst && burst > rs->printed) {
+	if (rs->burst && rs->burst > rs->printed) {
 		rs->printed++;
 		ret = 1;
 	} else {
