@@ -1400,7 +1400,8 @@ static void ieee80211_rx_reorder_ampdu(struct ieee80211_rx_data *rx,
 		goto dont_reorder;
 
 	/* not part of a BA session */
-	if (ack_policy == IEEE80211_QOS_CTL_ACK_POLICY_NOACK)
+	if (ack_policy != IEEE80211_QOS_CTL_ACK_POLICY_BLOCKACK &&
+	    ack_policy != IEEE80211_QOS_CTL_ACK_POLICY_NORMAL)
 		goto dont_reorder;
 
 	/* new, potentially un-ordered, ampdu frame - process it */
@@ -1917,8 +1918,7 @@ ieee80211_rx_h_decrypt(struct ieee80211_rx_data *rx)
 		int keyid = rx->sta->ptk_idx;
 		sta_ptk = rcu_dereference(rx->sta->ptk[keyid]);
 
-		if (ieee80211_has_protected(fc) &&
-		    !(status->flag & RX_FLAG_IV_STRIPPED)) {
+		if (ieee80211_has_protected(fc)) {
 			cs = rx->sta->cipher_scheme;
 			keyid = ieee80211_get_keyid(rx->skb, cs);
 
@@ -2688,10 +2688,10 @@ __ieee80211_rx_h_amsdu(struct ieee80211_rx_data *rx, u8 data_offset)
 	skb->dev = dev;
 	__skb_queue_head_init(&frame_list);
 
-	if (ieee80211_data_to_8023_exthdr(skb, &ethhdr,
-					  rx->sdata->vif.addr,
-					  rx->sdata->vif.type,
-					  data_offset, true))
+	if (ieee80211_data_to_8023_exthdr_bool(skb, &ethhdr,
+					       rx->sdata->vif.addr,
+					       rx->sdata->vif.type,
+					       data_offset, true))
 		return RX_DROP_UNUSABLE;
 
 	ieee80211_amsdu_to_8023s(skb, &frame_list, dev->dev_addr,
@@ -2851,13 +2851,13 @@ ieee80211_rx_h_mesh_fwding(struct ieee80211_rx_data *rx)
 	    ether_addr_equal(sdata->vif.addr, hdr->addr3))
 		return RX_CONTINUE;
 
-	ac = ieee802_1d_to_ac[skb->priority];
+	ac = ieee80211_select_queue_80211(sdata, skb, hdr);
 	q = sdata->vif.hw_queue[ac];
 	if (ieee80211_queue_stopped(&local->hw, q)) {
 		IEEE80211_IFSTA_MESH_CTR_INC(ifmsh, dropped_frames_congestion);
 		return RX_DROP_MONITOR;
 	}
-	skb_set_queue_mapping(skb, ac);
+	skb_set_queue_mapping(skb, q);
 
 	if (!--mesh_hdr->ttl) {
 		if (!is_multicast_ether_addr(hdr->addr1))
@@ -3952,8 +3952,7 @@ static bool ieee80211_accept_frame(struct ieee80211_rx_data *rx)
 		if (!bssid)
 			return false;
 		if (ether_addr_equal(sdata->vif.addr, hdr->addr2) ||
-		    ether_addr_equal(sdata->u.ibss.bssid, hdr->addr2) ||
-		    !is_valid_ether_addr(hdr->addr2))
+		    ether_addr_equal(sdata->u.ibss.bssid, hdr->addr2))
 			return false;
 		if (ieee80211_is_beacon(hdr->frame_control))
 			return true;
@@ -4692,7 +4691,7 @@ void ieee80211_rx_napi(struct ieee80211_hw *hw, struct ieee80211_sta *pubsta,
 				goto drop;
 			break;
 		case RX_ENC_VHT:
-			if (WARN_ONCE(status->rate_idx > 11 ||
+			if (WARN_ONCE(status->rate_idx > 9 ||
 				      !status->nss ||
 				      status->nss > 8,
 				      "Rate marked as a VHT rate but data is invalid: MCS: %d, NSS: %d\n",

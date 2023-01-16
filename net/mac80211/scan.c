@@ -216,8 +216,6 @@ ieee80211_bss_info_update(struct ieee80211_local *local,
 						rx_status, beacon);
 	}
 
-	kfree(elems.nontx_profile);
-
 	return bss;
 }
 
@@ -253,16 +251,6 @@ void ieee80211_scan_rx(struct ieee80211_local *local, struct sk_buff *skb)
 
 	if (likely(!sdata1 && !sdata2))
 		return;
-
-	if (test_and_clear_bit(SCAN_BEACON_WAIT, &local->scanning)) {
-		/*
-		 * we were passive scanning because of radar/no-IR, but
-		 * the beacon/proberesp rx gives us an opportunity to upgrade
-		 * to active scan
-		 */
-		 set_bit(SCAN_BEACON_DONE, &local->scanning);
-		 ieee80211_queue_delayed_work(&local->hw, &local->scan_work, 0);
-	}
 
 	if (ieee80211_is_probe_resp(mgmt->frame_control)) {
 		struct cfg80211_scan_request *scan_req;
@@ -319,8 +307,9 @@ ieee80211_prepare_scan_chandef(struct cfg80211_chan_def *chandef,
 }
 
 /* return false if no more work */
-static bool ieee80211_prep_hw_scan(struct ieee80211_local *local)
+static bool ieee80211_prep_hw_scan(struct ieee80211_sub_if_data *sdata)
 {
+	struct ieee80211_local *local = sdata->local;
 	struct cfg80211_scan_request *req;
 	struct cfg80211_chan_def chandef;
 	u8 bands_used = 0;
@@ -367,7 +356,7 @@ static bool ieee80211_prep_hw_scan(struct ieee80211_local *local)
 	if (req->flags & NL80211_SCAN_FLAG_MIN_PREQ_CONTENT)
 		flags |= IEEE80211_PROBE_FLAG_MIN_CONTENT;
 
-	ielen = ieee80211_build_preq_ies(local,
+	ielen = ieee80211_build_preq_ies(sdata,
 					 (u8 *)local->hw_scan_req->req.ie,
 					 local->hw_scan_ies_bufsize,
 					 &local->hw_scan_req->ies,
@@ -407,9 +396,12 @@ static void __ieee80211_scan_completed(struct ieee80211_hw *hw, bool aborted)
 	if (WARN_ON(!local->scan_req))
 		return;
 
+	scan_sdata = rcu_dereference_protected(local->scan_sdata,
+					       lockdep_is_held(&local->mtx));
+
 	if (hw_scan && !aborted &&
 	    !ieee80211_hw_check(&local->hw, SINGLE_SCAN_ON_ALL_BANDS) &&
-	    ieee80211_prep_hw_scan(local)) {
+	    ieee80211_prep_hw_scan(scan_sdata)) {
 		int rc;
 
 		rc = drv_hw_scan(local,
@@ -433,21 +425,15 @@ static void __ieee80211_scan_completed(struct ieee80211_hw *hw, bool aborted)
 	scan_req = rcu_dereference_protected(local->scan_req,
 					     lockdep_is_held(&local->mtx));
 
-	RCU_INIT_POINTER(local->scan_req, NULL);
-
-	scan_sdata = rcu_dereference_protected(local->scan_sdata,
-					       lockdep_is_held(&local->mtx));
-	RCU_INIT_POINTER(local->scan_sdata, NULL);
-
-	local->scanning = 0;
-	local->scan_chandef.chan = NULL;
-
-	synchronize_rcu();
-
 	if (scan_req != local->int_scan_req) {
 		local->scan_info.aborted = aborted;
 		cfg80211_scan_done(scan_req, &local->scan_info);
 	}
+	RCU_INIT_POINTER(local->scan_req, NULL);
+	RCU_INIT_POINTER(local->scan_sdata, NULL);
+
+	local->scanning = 0;
+	local->scan_chandef.chan = NULL;
 
 	/* Set power back to normal operating levels. */
 	ieee80211_hw_config(local, 0);
@@ -768,8 +754,6 @@ static int __ieee80211_start_scan(struct ieee80211_sub_if_data *sdata,
 						IEEE80211_CHAN_RADAR)) ||
 		    !req->n_ssids) {
 			next_delay = IEEE80211_PASSIVE_CHANNEL_TIME;
-			if (req->n_ssids)
-				set_bit(SCAN_BEACON_WAIT, &local->scanning);
 		} else {
 			ieee80211_scan_state_send_probe(local, &next_delay);
 			next_delay = IEEE80211_CHANNEL_TIME;
@@ -787,7 +771,7 @@ static int __ieee80211_start_scan(struct ieee80211_sub_if_data *sdata,
 	ieee80211_recalc_idle(local);
 
 	if (hw_scan) {
-		WARN_ON(!ieee80211_prep_hw_scan(local));
+		WARN_ON(!ieee80211_prep_hw_scan(sdata));
 		rc = drv_hw_scan(local, sdata, local->hw_scan_req);
 	} else {
 		rc = ieee80211_start_sw_scan(local, sdata);
@@ -962,8 +946,6 @@ static void ieee80211_scan_state_set_channel(struct ieee80211_local *local,
 	    !scan_req->n_ssids) {
 		*next_delay = IEEE80211_PASSIVE_CHANNEL_TIME;
 		local->next_scan_state = SCAN_DECISION;
-		if (scan_req->n_ssids)
-			set_bit(SCAN_BEACON_WAIT, &local->scanning);
 		return;
 	}
 
@@ -1056,8 +1038,6 @@ void ieee80211_scan_work(struct work_struct *work)
 			goto out;
 	}
 
-	clear_bit(SCAN_BEACON_WAIT, &local->scanning);
-
 	/*
 	 * as long as no delay is required advance immediately
 	 * without scheduling a new work
@@ -1067,10 +1047,6 @@ void ieee80211_scan_work(struct work_struct *work)
 			aborted = true;
 			goto out_complete;
 		}
-
-		if (test_and_clear_bit(SCAN_BEACON_DONE, &local->scanning) &&
-		    local->next_scan_state == SCAN_DECISION)
-			local->next_scan_state = SCAN_SEND_PROBE;
 
 		switch (local->next_scan_state) {
 		case SCAN_DECISION:
@@ -1292,7 +1268,7 @@ int __ieee80211_request_sched_scan_start(struct ieee80211_sub_if_data *sdata,
 
 	ieee80211_prepare_scan_chandef(&chandef, req->scan_width);
 
-	ieee80211_build_preq_ies(local, ie, num_bands * iebufsz,
+	ieee80211_build_preq_ies(sdata, ie, num_bands * iebufsz,
 				 &sched_scan_ies, req->ie,
 				 req->ie_len, bands_used, rate_masks, &chandef,
 				 flags);
