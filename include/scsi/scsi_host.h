@@ -10,6 +10,7 @@
 #include <linux/seq_file.h>
 #include <linux/blk-mq.h>
 #include <scsi/scsi.h>
+#include <linux/android_kabi.h>
 
 struct block_device;
 struct completion;
@@ -37,6 +38,12 @@ struct scsi_transport_template;
  */
 #define SG_NONE 0
 #define SG_ALL	SG_CHUNK_SIZE
+
+#ifdef CONFIG_ARCH_NO_SG_CHAIN
+#define SG_UFS SG_ALL
+#else
+#define SG_UFS 256
+#endif
 
 #define MODE_UNKNOWN 0x00
 #define MODE_INITIATOR 0x01
@@ -486,6 +493,14 @@ struct scsi_host_template {
 	 */
 	unsigned int cmd_size;
 	struct scsi_host_cmd_pool *cmd_pool;
+
+	/* Delay for runtime autosuspend */
+	int rpm_autosuspend_delay;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 /*

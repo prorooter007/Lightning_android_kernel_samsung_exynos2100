@@ -14,6 +14,9 @@
 #include <linux/uprobes.h>
 #include <linux/page-flags-layout.h>
 #include <linux/workqueue.h>
+#include <linux/android_kabi.h>
+#include <linux/android_vendor.h>
+#include <linux/android_vendor_util.h>
 
 #include <asm/mmu.h>
 
@@ -95,10 +98,10 @@ struct page {
 		};
 		struct {	/* page_pool used by netstack */
 			/**
-			 * @dma_addr: might require a 64-bit value on
+			 * @dma_addr: might require a 64-bit value even on
 			 * 32-bit architectures.
 			 */
-			unsigned long dma_addr[2];
+			dma_addr_t dma_addr;
 		};
 		struct {	/* slab, slob and slub */
 			union {
@@ -318,11 +321,18 @@ struct vm_area_struct {
 	/*
 	 * For areas with an address space and backing store,
 	 * linkage into the address_space->i_mmap interval tree.
+	 *
+	 * For private anonymous mappings, a pointer to a null terminated string
+	 * in the user process containing the name given to the vma, or NULL
+	 * if unnamed.
 	 */
-	struct {
-		struct rb_node rb;
-		unsigned long rb_subtree_last;
-	} shared;
+	union {
+		struct {
+			struct rb_node rb;
+			unsigned long rb_subtree_last;
+		} shared;
+		const char __user *anon_name;
+	};
 
 	/*
 	 * A file's MAP_PRIVATE vma can be in both i_mmap tree and anon_vma
@@ -353,6 +363,22 @@ struct vm_area_struct {
 	struct mempolicy *vm_policy;	/* NUMA policy for the VMA */
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
+
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	seqcount_t vm_sequence;
+	atomic_t vm_ref_count;
+#else
+	ANDROID_VENDOR_USE2(1, seqcount_t vm_sequence, atomic_t vm_ref_count);
+#endif
+#else
+	ANDROID_VENDOR_DATA(1);
+#endif
 } __randomize_layout;
 
 struct core_thread {
@@ -492,7 +518,8 @@ struct mm_struct {
 #ifdef CONFIG_MMU_NOTIFIER
 		struct mmu_notifier_mm *mmu_notifier_mm;
 #endif
-#if defined(CONFIG_TRANSPARENT_HUGEPAGE) && !USE_SPLIT_PMD_PTLOCKS
+#if (defined(CONFIG_TRANSPARENT_HUGEPAGE) || defined(CONFIG_GKI_OPT_FEATURES)) && \
+    !USE_SPLIT_PMD_PTLOCKS
 		pgtable_t pmd_huge_pte; /* protected by page_table_lock */
 #endif
 #ifdef CONFIG_NUMA_BALANCING
@@ -524,6 +551,15 @@ struct mm_struct {
 		atomic_long_t hugetlb_usage;
 #endif
 		struct work_struct async_put_work;
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+		rwlock_t mm_rb_lock;
+#else
+		ANDROID_VENDOR_USE(1, rwlock_t mm_rb_lock);
+#endif
+#else
+		ANDROID_VENDOR_DATA(1);
+#endif
 	} __randomize_layout;
 
 	/*
@@ -671,6 +707,8 @@ typedef __bitwise unsigned int vm_fault_t;
  * @VM_FAULT_NEEDDSYNC:		->fault did not modify page tables and needs
  *				fsync() to complete (for synchronous page faults
  *				in DAX)
+ * @VM_FAULT_PTNOTSAME		Page table entries have changed during a
+ *				speculative page fault handling.
  * @VM_FAULT_HINDEX_MASK:	mask HINDEX value
  *
  */
@@ -688,6 +726,7 @@ enum vm_fault_reason {
 	VM_FAULT_FALLBACK       = (__force vm_fault_t)0x000800,
 	VM_FAULT_DONE_COW       = (__force vm_fault_t)0x001000,
 	VM_FAULT_NEEDDSYNC      = (__force vm_fault_t)0x002000,
+	VM_FAULT_PTNOTSAME	= (__force vm_fault_t)0x004000,
 	VM_FAULT_HINDEX_MASK    = (__force vm_fault_t)0x0f0000,
 };
 
@@ -712,7 +751,8 @@ enum vm_fault_reason {
 	{ VM_FAULT_RETRY,               "RETRY" },	\
 	{ VM_FAULT_FALLBACK,            "FALLBACK" },	\
 	{ VM_FAULT_DONE_COW,            "DONE_COW" },	\
-	{ VM_FAULT_NEEDDSYNC,           "NEEDDSYNC" }
+	{ VM_FAULT_NEEDDSYNC,           "NEEDDSYNC" },	\
+	{ VM_FAULT_PTNOTSAME,		"PTNOTSAME" }
 
 struct vm_special_mapping {
 	const char *name;	/* The name, e.g. "[vdso]". */
@@ -753,5 +793,14 @@ enum tlb_flush_reason {
 typedef struct {
 	unsigned long val;
 } swp_entry_t;
+
+/* Return the name for an anonymous mapping or NULL for a file-backed mapping */
+static inline const char __user *vma_get_anon_name(struct vm_area_struct *vma)
+{
+	if (vma->vm_file)
+		return NULL;
+
+	return vma->anon_name;
+}
 
 #endif /* _LINUX_MM_TYPES_H */

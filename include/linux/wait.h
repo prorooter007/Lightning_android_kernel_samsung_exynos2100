@@ -202,6 +202,7 @@ void __wake_up_locked_key(struct wait_queue_head *wq_head, unsigned int mode, vo
 void __wake_up_locked_key_bookmark(struct wait_queue_head *wq_head,
 		unsigned int mode, void *key, wait_queue_entry_t *bookmark);
 void __wake_up_sync_key(struct wait_queue_head *wq_head, unsigned int mode, int nr, void *key);
+void __wake_up_sync_cl_key(struct wait_queue_head *wq_head, unsigned int mode, void *key);
 void __wake_up_locked(struct wait_queue_head *wq_head, unsigned int mode, int nr);
 void __wake_up_sync(struct wait_queue_head *wq_head, unsigned int mode, int nr);
 void __wake_up_pollfree(struct wait_queue_head *wq_head);
@@ -230,6 +231,8 @@ void __wake_up_pollfree(struct wait_queue_head *wq_head);
 	__wake_up(x, TASK_INTERRUPTIBLE, 1, poll_to_key(m))
 #define wake_up_interruptible_sync_poll(x, m)					\
 	__wake_up_sync_key((x), TASK_INTERRUPTIBLE, 1, poll_to_key(m))
+#define wake_up_interruptible_sync_cl_poll(x, m)				\
+	__wake_up_sync_cl_key((x), TASK_INTERRUPTIBLE, poll_to_key(m))
 
 /**
  * wake_up_pollfree - signal that a polled waitqueue is going away
@@ -529,11 +532,10 @@ do {										\
 										\
 	hrtimer_init_sleeper_on_stack(&__t, CLOCK_MONOTONIC,			\
 				      HRTIMER_MODE_REL);			\
-	if ((timeout) != KTIME_MAX) {						\
-		hrtimer_set_expires_range_ns(&__t.timer, timeout,		\
-					current->timer_slack_ns);		\
-		hrtimer_sleeper_start_expires(&__t, HRTIMER_MODE_REL);		\
-	}									\
+	if ((timeout) != KTIME_MAX)						\
+		hrtimer_start_range_ns(&__t.timer, timeout,			\
+				       current->timer_slack_ns,			\
+				       HRTIMER_MODE_REL);			\
 										\
 	__ret = ___wait_event(wq_head, condition, state, 0, 0,			\
 		if (!__t.task) {						\

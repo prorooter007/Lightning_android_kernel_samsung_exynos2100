@@ -190,15 +190,11 @@ extern void tlb_remove_table(struct mmu_gather *tlb, void *table);
 #define tlb_needs_table_invalidate() (true)
 #endif
 
-void tlb_remove_table_sync_one(void);
-
 #else
 
 #ifdef tlb_needs_table_invalidate
 #error tlb_needs_table_invalidate() requires HAVE_RCU_TABLE_FREE
 #endif
-
-static inline void tlb_remove_table_sync_one(void) { }
 
 #endif /* CONFIG_HAVE_RCU_TABLE_FREE */
 
@@ -499,38 +495,6 @@ static inline void tlb_end_vma(struct mmu_gather *tlb, struct vm_area_struct *vm
 }
 #endif
 
-/*
- * tlb_flush_{pte|pmd|pud|p4d}_range() adjust the tlb->start and tlb->end,
- * and set corresponding cleared_*.
- */
-static inline void tlb_flush_pte_range(struct mmu_gather *tlb,
-				     unsigned long address, unsigned long size)
-{
-	__tlb_adjust_range(tlb, address, size);
-	tlb->cleared_ptes = 1;
-}
-
-static inline void tlb_flush_pmd_range(struct mmu_gather *tlb,
-				     unsigned long address, unsigned long size)
-{
-	__tlb_adjust_range(tlb, address, size);
-	tlb->cleared_pmds = 1;
-}
-
-static inline void tlb_flush_pud_range(struct mmu_gather *tlb,
-				     unsigned long address, unsigned long size)
-{
-	__tlb_adjust_range(tlb, address, size);
-	tlb->cleared_puds = 1;
-}
-
-static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
-				     unsigned long address, unsigned long size)
-{
-	__tlb_adjust_range(tlb, address, size);
-	tlb->cleared_p4ds = 1;
-}
-
 #ifndef __tlb_remove_tlb_entry
 #define __tlb_remove_tlb_entry(tlb, ptep, address) do { } while (0)
 #endif
@@ -544,21 +508,19 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
  */
 #define tlb_remove_tlb_entry(tlb, ptep, address)		\
 	do {							\
-		tlb_flush_pte_range(tlb, address, PAGE_SIZE);	\
+		__tlb_adjust_range(tlb, address, PAGE_SIZE);	\
+		tlb->cleared_ptes = 1;				\
 		__tlb_remove_tlb_entry(tlb, ptep, address);	\
 	} while (0)
 
 #define tlb_remove_huge_tlb_entry(h, tlb, ptep, address)	\
 	do {							\
 		unsigned long _sz = huge_page_size(h);		\
-		if (_sz >= P4D_SIZE)				\
-			tlb_flush_p4d_range(tlb, address, _sz);	\
-		else if (_sz >= PUD_SIZE)			\
-			tlb_flush_pud_range(tlb, address, _sz);	\
-		else if (_sz >= PMD_SIZE)			\
-			tlb_flush_pmd_range(tlb, address, _sz);	\
-		else						\
-			tlb_flush_pte_range(tlb, address, _sz);	\
+		__tlb_adjust_range(tlb, address, _sz);		\
+		if (_sz == PMD_SIZE)				\
+			tlb->cleared_pmds = 1;			\
+		else if (_sz == PUD_SIZE)			\
+			tlb->cleared_puds = 1;			\
 		__tlb_remove_tlb_entry(tlb, ptep, address);	\
 	} while (0)
 
@@ -572,7 +534,8 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
 
 #define tlb_remove_pmd_tlb_entry(tlb, pmdp, address)			\
 	do {								\
-		tlb_flush_pmd_range(tlb, address, HPAGE_PMD_SIZE);	\
+		__tlb_adjust_range(tlb, address, HPAGE_PMD_SIZE);	\
+		tlb->cleared_pmds = 1;					\
 		__tlb_remove_pmd_tlb_entry(tlb, pmdp, address);		\
 	} while (0)
 
@@ -586,7 +549,8 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
 
 #define tlb_remove_pud_tlb_entry(tlb, pudp, address)			\
 	do {								\
-		tlb_flush_pud_range(tlb, address, HPAGE_PUD_SIZE);	\
+		__tlb_adjust_range(tlb, address, HPAGE_PUD_SIZE);	\
+		tlb->cleared_puds = 1;					\
 		__tlb_remove_pud_tlb_entry(tlb, pudp, address);		\
 	} while (0)
 
@@ -611,8 +575,9 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
 #ifndef pte_free_tlb
 #define pte_free_tlb(tlb, ptep, address)			\
 	do {							\
-		tlb_flush_pmd_range(tlb, address, PAGE_SIZE);	\
+		__tlb_adjust_range(tlb, address, PAGE_SIZE);	\
 		tlb->freed_tables = 1;				\
+		tlb->cleared_pmds = 1;				\
 		__pte_free_tlb(tlb, ptep, address);		\
 	} while (0)
 #endif
@@ -620,8 +585,9 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
 #ifndef pmd_free_tlb
 #define pmd_free_tlb(tlb, pmdp, address)			\
 	do {							\
-		tlb_flush_pud_range(tlb, address, PAGE_SIZE);	\
+		__tlb_adjust_range(tlb, address, PAGE_SIZE);	\
 		tlb->freed_tables = 1;				\
+		tlb->cleared_puds = 1;				\
 		__pmd_free_tlb(tlb, pmdp, address);		\
 	} while (0)
 #endif
@@ -630,8 +596,9 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
 #ifndef pud_free_tlb
 #define pud_free_tlb(tlb, pudp, address)			\
 	do {							\
-		tlb_flush_p4d_range(tlb, address, PAGE_SIZE);	\
+		__tlb_adjust_range(tlb, address, PAGE_SIZE);	\
 		tlb->freed_tables = 1;				\
+		tlb->cleared_p4ds = 1;				\
 		__pud_free_tlb(tlb, pudp, address);		\
 	} while (0)
 #endif

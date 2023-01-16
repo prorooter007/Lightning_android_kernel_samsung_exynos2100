@@ -79,6 +79,20 @@ struct inet_request_sock {
 #define ireq_state		req.__req_common.skc_state
 #define ireq_family		req.__req_common.skc_family
 
+#ifdef CONFIG_MPTCP
+		u32		snd_wscale : 4,
+				rcv_wscale : 4,
+				tstamp_ok  : 1,
+				sack_ok	   : 1,
+				wscale_ok  : 1,
+				ecn_ok	   : 1,
+				acked	   : 1,
+				no_srccheck: 1,
+				mptcp_rqsk : 1,
+				saw_mpc    : 1,
+				smc_ok	   : 1;
+	u32                     ir_mark;
+#else
 	u16			snd_wscale : 4,
 				rcv_wscale : 4,
 				tstamp_ok  : 1,
@@ -89,6 +103,7 @@ struct inet_request_sock {
 				no_srccheck: 1,
 				smc_ok	   : 1;
 	u32                     ir_mark;
+#endif
 	union {
 		struct ip_options_rcu __rcu	*ireq_opt;
 #if IS_ENABLED(CONFIG_IPV6)
@@ -107,8 +122,7 @@ static inline struct inet_request_sock *inet_rsk(const struct request_sock *sk)
 
 static inline u32 inet_request_mark(const struct sock *sk, struct sk_buff *skb)
 {
-	if (!sk->sk_mark &&
-	    READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_fwmark_accept))
+	if (!sk->sk_mark && sock_net(sk)->ipv4.sysctl_tcp_fwmark_accept)
 		return skb->mark;
 
 	return sk->sk_mark;
@@ -376,7 +390,7 @@ static inline bool inet_get_convert_csum(struct sock *sk)
 static inline bool inet_can_nonlocal_bind(struct net *net,
 					  struct inet_sock *inet)
 {
-	return READ_ONCE(net->ipv4.sysctl_ip_nonlocal_bind) ||
+	return net->ipv4.sysctl_ip_nonlocal_bind ||
 		inet->freebind || inet->transparent;
 }
 
