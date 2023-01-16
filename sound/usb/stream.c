@@ -67,9 +67,13 @@ static void snd_usb_audio_stream_free(struct snd_usb_stream *stream)
 static void snd_usb_audio_pcm_free(struct snd_pcm *pcm)
 {
 	struct snd_usb_stream *stream = pcm->private_data;
+	struct snd_usb_audio *chip;
 	if (stream) {
+		mutex_lock(&stream->chip->dev_lock);
+		chip = stream->chip;
 		stream->pcm = NULL;
 		snd_usb_audio_stream_free(stream);
+		mutex_unlock(&chip->dev_lock);
 	}
 }
 
@@ -94,7 +98,6 @@ static void snd_usb_init_substream(struct snd_usb_stream *as,
 	subs->tx_length_quirk = as->chip->tx_length_quirk;
 	subs->speed = snd_usb_get_speed(subs->dev);
 	subs->pkt_offset_adj = 0;
-	subs->stream_offset_adj = 0;
 
 	snd_usb_set_pcm_ops(as->pcm, stream);
 
@@ -1103,7 +1106,7 @@ static int __snd_usb_parse_audio_interface(struct snd_usb_audio *chip,
 	 * Dallas DS4201 workaround: It presents 5 altsettings, but the last
 	 * one misses syncpipe, and does not produce any sound.
 	 */
-	if (chip->usb_id == USB_ID(0x04fa, 0x4201) && num >= 4)
+	if (chip->usb_id == USB_ID(0x04fa, 0x4201))
 		num = 4;
 
 	for (i = 0; i < num; i++) {
@@ -1207,6 +1210,10 @@ static int __snd_usb_parse_audio_interface(struct snd_usb_audio *chip,
 		usb_set_interface(chip->dev, iface_no, altno);
 		snd_usb_init_pitch(chip, iface_no, alts, fp);
 		snd_usb_init_sample_rate(chip, iface_no, alts, fp, fp->rate_max);
+#ifdef CONFIG_GKI_USB
+		if (protocol > UAC_VERSION_1)
+			snd_vendor_set_interface(chip->dev, alts, iface_no, 0);
+#endif
 	}
 	return 0;
 }

@@ -217,8 +217,7 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 	if (!codec_node) {
 		dev_err(&pdev->dev,
 			"Property 'audio-codec' missing or invalid\n");
-		ret = -EINVAL;
-		goto put_platform_node;
+		return -EINVAL;
 	}
 	for_each_card_prelinks(card, i, dai_link) {
 		if (dai_link->codecs->name)
@@ -231,9 +230,6 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "%s snd_soc_register_card fail %d\n",
 			__func__, ret);
 
-	of_node_put(codec_node);
-put_platform_node:
-	of_node_put(platform_node);
 	return ret;
 }
 
