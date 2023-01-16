@@ -63,6 +63,7 @@
 #include <linux/oom.h>
 #include <linux/compat.h>
 #include <linux/vmalloc.h>
+#include <linux/task_integrity.h>
 
 #include <linux/uaccess.h>
 #include <asm/mmu_context.h>
@@ -73,6 +74,9 @@
 
 #include <trace/events/sched.h>
 
+#ifdef CONFIG_SECURITY_DEFEX
+#include <linux/defex.h>
+#endif
 int suid_dumpable = 0;
 
 static LIST_HEAD(formats);
@@ -267,6 +271,7 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	vma->vm_start = vma->vm_end - PAGE_SIZE;
 	vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+	INIT_VMA(vma);
 
 	err = insert_vm_struct(mm, vma);
 	if (err)
@@ -454,9 +459,6 @@ static int prepare_arg_pages(struct linux_binprm *bprm,
 	unsigned long limit, ptr_size;
 
 	bprm->argc = count(argv, MAX_ARG_STRINGS);
-	if (bprm->argc == 0)
-		pr_warn_once("process '%s' launched '%s' with NULL argv: empty string added\n",
-			     current->comm, bprm->filename);
 	if (bprm->argc < 0)
 		return bprm->argc;
 
@@ -485,14 +487,8 @@ static int prepare_arg_pages(struct linux_binprm *bprm,
 	 * the stack. They aren't stored until much later when we can't
 	 * signal to the parent that the child has run out of stack space.
 	 * Instead, calculate it here so it's possible to fail gracefully.
-	 *
-	 * In the case of argc = 0, make sure there is space for adding a
-	 * empty string (which will bump argc to 1), to ensure confused
-	 * userspace programs don't start processing from argv[1], thinking
-	 * argc can never be 0, to keep them from walking envp by accident.
-	 * See do_execveat_common().
 	 */
-	ptr_size = (max(bprm->argc, 1) + bprm->envc) * sizeof(void *);
+	ptr_size = (bprm->argc + bprm->envc) * sizeof(void *);
 	if (limit <= ptr_size)
 		return -E2BIG;
 	limit -= ptr_size;
@@ -997,7 +993,7 @@ int kernel_read_file_from_fd(int fd, void **buf, loff_t *size, loff_t max_size,
 	struct fd f = fdget(fd);
 	int ret = -EBADF;
 
-	if (!f.file || !(f.file->f_mode & FMODE_READ))
+	if (!f.file)
 		goto out;
 
 	ret = kernel_read_file(f.file, buf, size, max_size, id);
@@ -1016,25 +1012,15 @@ ssize_t read_code(struct file *file, unsigned long addr, loff_t pos, size_t len)
 }
 EXPORT_SYMBOL(read_code);
 
-/*
- * Maps the mm_struct mm into the current task struct.
- * On success, this function returns with exec_update_lock
- * held for writing.
- */
 static int exec_mmap(struct mm_struct *mm)
 {
 	struct task_struct *tsk;
 	struct mm_struct *old_mm, *active_mm;
-	int ret;
 
 	/* Notify parent that we're no longer interested in the old VM */
 	tsk = current;
 	old_mm = current->mm;
 	exec_mm_release(tsk, old_mm);
-
-	ret = down_write_killable(&tsk->signal->exec_update_lock);
-	if (ret)
-		return ret;
 
 	if (old_mm) {
 		sync_mm_rss(old_mm);
@@ -1047,11 +1033,9 @@ static int exec_mmap(struct mm_struct *mm)
 		down_read(&old_mm->mmap_sem);
 		if (unlikely(old_mm->core_state)) {
 			up_read(&old_mm->mmap_sem);
-			up_write(&tsk->signal->exec_update_lock);
 			return -EINTR;
 		}
 	}
-
 	task_lock(tsk);
 	membarrier_exec_mmap(mm);
 
@@ -1073,6 +1057,10 @@ static int exec_mmap(struct mm_struct *mm)
 		local_irq_enable();
 	tsk->mm->vmacache_seqnum = 0;
 	vmacache_flush(tsk);
+#ifdef CONFIG_KDP_CRED
+	if (kdp_enable)
+		uh_call(UH_APP_KDP, SET_CRED_PGD, (u64)current_cred(), (u64)mm->pgd, 0, 0);
+#endif
 	task_unlock(tsk);
 	if (old_mm) {
 		up_read(&old_mm->mmap_sem);
@@ -1314,17 +1302,23 @@ int flush_old_exec(struct linux_binprm * bprm)
 	 * Release all of the old mmap stuff
 	 */
 	acct_arg_size(bprm, 0);
+#ifdef CONFIG_KDP_NS
+	/*
+	if (kdp_enable && is_kdp_priv_task() && invalid_drive(bprm)) {
+		panic("[KDP] Illegal Execution of file #%s#\n", bprm->filename);
+	}
+	*/
+#endif
 	retval = exec_mmap(bprm->mm);
 	if (retval)
 		goto out;
 
 	/*
-	 * After setting bprm->called_exec_mmap (to mark that current is
-	 * using the prepared mm now), we have nothing left of the original
+	 * After clearing bprm->mm (to mark that current is using the
+	 * prepared mm now), we have nothing left of the original
 	 * process. If anything from here on returns an error, the check
 	 * in search_binary_handler() will SEGV current.
 	 */
-	bprm->called_exec_mmap = 1;
 	bprm->mm = NULL;
 
 	set_fs(USER_DS);
@@ -1458,8 +1452,6 @@ static void free_bprm(struct linux_binprm *bprm)
 {
 	free_arg_pages(bprm);
 	if (bprm->cred) {
-		if (bprm->called_exec_mmap)
-			up_write(&current->signal->exec_update_lock);
 		mutex_unlock(&current->signal->cred_guard_mutex);
 		abort_creds(bprm->cred);
 	}
@@ -1509,7 +1501,6 @@ void install_exec_creds(struct linux_binprm *bprm)
 	 * credentials; any time after this it may be unlocked.
 	 */
 	security_bprm_committed_creds(bprm);
-	up_write(&current->signal->exec_update_lock);
 	mutex_unlock(&current->signal->cred_guard_mutex);
 }
 EXPORT_SYMBOL(install_exec_creds);
@@ -1701,7 +1692,7 @@ int search_binary_handler(struct linux_binprm *bprm)
 
 		read_lock(&binfmt_lock);
 		put_binfmt(fmt);
-		if (retval < 0 && bprm->called_exec_mmap) {
+		if (retval < 0 && !bprm->mm) {
 			/* we got to flush_old_exec() and failed after it */
 			read_unlock(&binfmt_lock);
 			force_sigsegv(SIGSEGV);
@@ -1745,6 +1736,8 @@ static int exec_binprm(struct linux_binprm *bprm)
 		trace_sched_process_exec(current, old_pid, bprm);
 		ptrace_event(PTRACE_EVENT_EXEC, old_vpid);
 		proc_exec_connector(current);
+	} else {
+		task_integrity_delayed_reset(current, CAUSE_EXEC, bprm->file);
 	}
 
 	return ret;
@@ -1804,6 +1797,15 @@ static int __do_execve_file(int fd, struct filename *filename,
 	if (IS_ERR(file))
 		goto out_unmark;
 
+#ifdef CONFIG_SECURITY_DEFEX
+	retval = task_defex_enforce(current, file, -__NR_execve);
+	if (retval < 0) {
+		bprm->file = file;
+		retval = -EPERM;
+		goto out_unmark;
+	 }
+#endif
+
 	sched_exec();
 
 	bprm->file = file;
@@ -1856,20 +1858,6 @@ static int __do_execve_file(int fd, struct filename *filename,
 	retval = copy_strings(bprm->argc, argv, bprm);
 	if (retval < 0)
 		goto out;
-
-	/*
-	 * When argv is empty, add an empty string ("") as argv[0] to
-	 * ensure confused userspace programs that start processing
-	 * from argv[1] won't end up walking envp. See also
-	 * bprm_stack_limits().
-	 */
-	if (bprm->argc == 0) {
-		const char *argv[] = { "", NULL };
-		retval = copy_strings_kernel(1, argv, bprm);
-		if (retval < 0)
-			goto out;
-		bprm->argc = 1;
-	}
 
 	retval = exec_binprm(bprm);
 	if (retval < 0)
@@ -2010,6 +1998,29 @@ SYSCALL_DEFINE3(execve,
 		const char __user *const __user *, argv,
 		const char __user *const __user *, envp)
 {
+#ifdef CONFIG_KDP_CRED
+	struct filename *path = getname(filename);
+	int error = PTR_ERR(path);
+
+	if (IS_ERR(path))
+		return error;
+
+	if (kdp_enable) {
+		uh_call(UH_APP_KDP, MARK_PPT, (u64)path->name, (u64)current, 0, 0);
+		if (current->cred->uid.val == 0 || current->cred->gid.val == 0 ||
+			current->cred->euid.val == 0 || current->cred->egid.val == 0 ||
+			current->cred->suid.val == 0 || current->cred->sgid.val == 0) {
+			if (kdp_restrict_fork(path)) {
+				pr_warn("RKP_KDP Restricted making process. PID = %d(%s) PPID = %d(%s)\n",
+						current->pid, current->comm,
+						current->parent->pid, current->parent->comm);
+				putname(path);
+				return -EACCES;
+			}
+		}
+	}
+	putname(path);
+#endif
 	return do_execve(getname(filename), argv, envp);
 }
 

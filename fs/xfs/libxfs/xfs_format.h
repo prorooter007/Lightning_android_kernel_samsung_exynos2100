@@ -1144,11 +1144,11 @@ static inline void xfs_dinode_put_rdev(struct xfs_dinode *dip, xfs_dev_t rdev)
 
 /*
  * This is the main portion of the on-disk representation of quota
- * information for a user. This is the q_core of the struct xfs_dquot that
+ * information for a user. This is the q_core of the xfs_dquot_t that
  * is kept in kernel memory. We pad this with some more expansion room
  * to construct the on disk structure.
  */
-struct xfs_disk_dquot {
+typedef struct	xfs_disk_dquot {
 	__be16		d_magic;	/* dquot magic = XFS_DQUOT_MAGIC */
 	__u8		d_version;	/* dquot version */
 	__u8		d_flags;	/* XFS_DQ_USER/PROJ/GROUP */
@@ -1171,15 +1171,15 @@ struct xfs_disk_dquot {
 	__be32		d_rtbtimer;	/* similar to above; for RT disk blocks */
 	__be16		d_rtbwarns;	/* warnings issued wrt RT disk blocks */
 	__be16		d_pad;
-};
+} xfs_disk_dquot_t;
 
 /*
  * This is what goes on disk. This is separated from the xfs_disk_dquot because
  * carrying the unnecessary padding would be a waste of memory.
  */
 typedef struct xfs_dqblk {
-	struct xfs_disk_dquot	dd_diskdq; /* portion living incore as well */
-	char			dd_fill[4];/* filling for posterity */
+	xfs_disk_dquot_t  dd_diskdq;	/* portion that lives incore as well */
+	char		  dd_fill[4];	/* filling for posterity */
 
 	/*
 	 * These two are only present on filesystems with the CRC bits set.
@@ -1540,13 +1540,6 @@ typedef struct xfs_bmdr_block {
 #define BMBT_BLOCKCOUNT_BITLEN	21
 
 #define BMBT_STARTOFF_MASK	((1ULL << BMBT_STARTOFF_BITLEN) - 1)
-#define BMBT_BLOCKCOUNT_MASK	((1ULL << BMBT_BLOCKCOUNT_BITLEN) - 1)
-
-/*
- * bmbt records have a file offset (block) field that is 54 bits wide, so this
- * is the largest xfs_fileoff_t that we ever expect to see.
- */
-#define XFS_MAX_FILEOFF		(BMBT_STARTOFF_MASK + BMBT_BLOCKCOUNT_MASK)
 
 typedef struct xfs_bmbt_rec {
 	__be64			l0, l1;

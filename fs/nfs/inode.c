@@ -791,9 +791,12 @@ int nfs_getattr(const struct path *path, struct kstat *stat,
 		goto out_no_update;
 
 	/* Flush out writes to the server in order to update c/mtime.  */
-	if ((request_mask & (STATX_CTIME | STATX_MTIME)) &&
-	    S_ISREG(inode->i_mode))
-		filemap_write_and_wait(inode->i_mapping);
+	if ((request_mask & (STATX_CTIME|STATX_MTIME)) &&
+			S_ISREG(inode->i_mode)) {
+		err = filemap_write_and_wait(inode->i_mapping);
+		if (err)
+			goto out;
+	}
 
 	/*
 	 * We may force a getattr if the user cares about atime.

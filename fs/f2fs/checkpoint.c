@@ -10,6 +10,7 @@
 #include <linux/mpage.h>
 #include <linux/writeback.h>
 #include <linux/blkdev.h>
+#include <linux/kthread.h>
 #include <linux/f2fs_fs.h>
 #include <linux/pagevec.h>
 #include <linux/swap.h>
@@ -22,6 +23,8 @@
 
 static struct kmem_cache *ino_entry_slab;
 struct kmem_cache *f2fs_inode_entry_slab;
+unsigned long long priv_cp_time;
+unsigned long long curr_cp_time;
 
 void f2fs_stop_checkpoint(struct f2fs_sb_info *sbi, bool end_io)
 {
@@ -50,9 +53,6 @@ repeat:
 	return page;
 }
 
-/*
- * We guarantee no failure on the returned page.
- */
 static struct page *__get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index,
 							bool is_meta)
 {
@@ -88,6 +88,8 @@ repeat:
 		f2fs_put_page(page, 1);
 		return ERR_PTR(err);
 	}
+
+	f2fs_update_iostat(sbi, FS_META_READ_IO, F2FS_BLKSIZE);
 
 	lock_page(page);
 	if (unlikely(page->mapping != mapping)) {
@@ -137,7 +139,7 @@ static bool __is_bitmap_valid(struct f2fs_sb_info *sbi, block_t blkaddr,
 	unsigned int segno, offset;
 	bool exist;
 
-	if (type == DATA_GENERIC)
+	if (type != DATA_GENERIC_ENHANCE && type != DATA_GENERIC_ENHANCE_READ)
 		return true;
 
 	segno = GET_SEGNO(sbi, blkaddr);
@@ -145,18 +147,11 @@ static bool __is_bitmap_valid(struct f2fs_sb_info *sbi, block_t blkaddr,
 	se = get_seg_entry(sbi, segno);
 
 	exist = f2fs_test_bit(offset, se->cur_valid_map);
-	if (exist && type == DATA_GENERIC_ENHANCE_UPDATE) {
-		f2fs_err(sbi, "Inconsistent error blkaddr:%u, sit bitmap:%d",
-			 blkaddr, exist);
-		set_sbi_flag(sbi, SBI_NEED_FSCK);
-		return exist;
-	}
-
 	if (!exist && type == DATA_GENERIC_ENHANCE) {
 		f2fs_err(sbi, "Inconsistent error blkaddr:%u, sit bitmap:%d",
 			 blkaddr, exist);
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
-		dump_stack();
+		WARN_ON(1);
 	}
 	return exist;
 }
@@ -189,13 +184,12 @@ bool f2fs_is_valid_blkaddr(struct f2fs_sb_info *sbi,
 	case DATA_GENERIC:
 	case DATA_GENERIC_ENHANCE:
 	case DATA_GENERIC_ENHANCE_READ:
-	case DATA_GENERIC_ENHANCE_UPDATE:
 		if (unlikely(blkaddr >= MAX_BLKADDR(sbi) ||
 				blkaddr < MAIN_BLKADDR(sbi))) {
 			f2fs_warn(sbi, "access invalid blkaddr:%u",
 				  blkaddr);
 			set_sbi_flag(sbi, SBI_NEED_FSCK);
-			dump_stack();
+			WARN_ON(1);
 			return false;
 		} else {
 			return __is_bitmap_valid(sbi, blkaddr, type);
@@ -214,7 +208,7 @@ bool f2fs_is_valid_blkaddr(struct f2fs_sb_info *sbi,
 }
 
 /*
- * Readahead CP/NAT/SIT/SSA pages
+ * Readahead CP/NAT/SIT/SSA/POR pages
  */
 int f2fs_ra_meta_pages(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 							int type, bool sync)
@@ -231,6 +225,7 @@ int f2fs_ra_meta_pages(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 		.is_por = (type == META_POR),
 	};
 	struct blk_plug plug;
+	int err;
 
 	if (unlikely(type == META_POR))
 		fio.op_flags &= ~REQ_META;
@@ -276,8 +271,11 @@ int f2fs_ra_meta_pages(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 		}
 
 		fio.page = page;
-		f2fs_submit_page_bio(&fio);
-		f2fs_put_page(page, 0);
+		err = f2fs_submit_page_bio(&fio);
+		f2fs_put_page(page, err ? 1 : 0);
+
+		if (!err)
+			f2fs_update_iostat(sbi, FS_META_READ_IO, F2FS_BLKSIZE);
 	}
 out:
 	blk_finish_plug(&plug);
@@ -725,6 +723,8 @@ int f2fs_recover_orphan_inodes(struct f2fs_sb_info *sbi)
 			nid_t ino = le32_to_cpu(orphan_blk->ino[j]);
 			err = recover_orphan_inode(sbi, ino);
 			if (err) {
+				print_block_data(sbi->sb, start_blk + i,
+					page_address(page), 0, F2FS_BLKSIZE);
 				f2fs_put_page(page, 1);
 				goto out;
 			}
@@ -822,6 +822,7 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 		struct f2fs_checkpoint **cp_block, struct page **cp_page,
 		unsigned long long *version)
 {
+	unsigned long blk_size = sbi->blocksize;
 	size_t crc_offset = 0;
 	__u32 crc;
 
@@ -836,18 +837,22 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 			crc_offset > CP_CHKSUM_OFFSET) {
 		f2fs_put_page(*cp_page, 1);
 		f2fs_warn(sbi, "invalid crc_offset: %zu", crc_offset);
-		return -EINVAL;
+		goto error;
 	}
 
 	crc = f2fs_checkpoint_chksum(sbi, *cp_block);
 	if (crc != cur_cp_crc(*cp_block)) {
 		f2fs_put_page(*cp_page, 1);
 		f2fs_warn(sbi, "invalid crc value");
-		return -EINVAL;
+		goto error;
 	}
 
 	*version = cur_cp_version(*cp_block);
 	return 0;
+
+error:
+	print_block_data(sbi->sb, cp_addr, page_address(*cp_page), 0, blk_size);
+	return -EINVAL;
 }
 
 static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
@@ -856,7 +861,6 @@ static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 	struct page *cp_page_1 = NULL, *cp_page_2 = NULL;
 	struct f2fs_checkpoint *cp_block = NULL;
 	unsigned long long cur_version = 0, pre_version = 0;
-	unsigned int cp_blocks;
 	int err;
 
 	err = get_checkpoint_version(sbi, cp_addr, &cp_block,
@@ -864,16 +868,15 @@ static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 	if (err)
 		return NULL;
 
-	cp_blocks = le32_to_cpu(cp_block->cp_pack_total_block_count);
-
-	if (cp_blocks > sbi->blocks_per_seg || cp_blocks <= F2FS_CP_PACKS) {
+	if (le32_to_cpu(cp_block->cp_pack_total_block_count) >
+					sbi->blocks_per_seg) {
 		f2fs_warn(sbi, "invalid cp_pack_total_block_count:%u",
 			  le32_to_cpu(cp_block->cp_pack_total_block_count));
 		goto invalid_cp;
 	}
 	pre_version = *version;
 
-	cp_addr += cp_blocks - 1;
+	cp_addr += le32_to_cpu(cp_block->cp_pack_total_block_count) - 1;
 	err = get_checkpoint_version(sbi, cp_addr, &cp_block,
 					&cp_page_2, version);
 	if (err)
@@ -910,7 +913,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 		return -ENOMEM;
 	/*
 	 * Finding out valid cp block involves read both
-	 * sets( cp pack1 and cp pack 2)
+	 * sets( cp pack 1 and cp pack 2)
 	 */
 	cp_start_blk_no = le32_to_cpu(fsb->cp_blkaddr);
 	cp1 = validate_checkpoint(sbi, cp_start_blk_no, &cp1_version);
@@ -945,8 +948,12 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	/* Sanity checking of checkpoint */
 	if (f2fs_sanity_check_ckpt(sbi)) {
 		err = -EFSCORRUPTED;
+		print_block_data(sbi->sb, cur_page->index,
+				 page_address(cur_page), 0, blk_size);
 		goto free_fail_no_cp;
 	}
+
+	f2fs_get_fsck_stat(sbi);
 
 	if (cp_blks <= 1)
 		goto done;
@@ -1154,8 +1161,7 @@ static bool __need_flush_quota(struct f2fs_sb_info *sbi)
 	if (!is_journalled_quota(sbi))
 		return false;
 
-	if (!down_write_trylock(&sbi->quota_sem))
-		return true;
+	down_write(&sbi->quota_sem);
 	if (is_sbi_flag_set(sbi, SBI_QUOTA_SKIP_FLUSH)) {
 		ret = false;
 	} else if (is_sbi_flag_set(sbi, SBI_QUOTA_NEED_REPAIR)) {
@@ -1170,6 +1176,22 @@ static bool __need_flush_quota(struct f2fs_sb_info *sbi)
 	return ret;
 }
 
+/* @fs.sec -- 2ef667bb57e25110542e58d9cc8a0bb5 -- */
+#ifdef CONFIG_F2FS_SEC_BLOCK_OPERATIONS_DEBUG
+#define sec_dbg_inc_cnt(node, type)			\
+	do {						\
+		node.step = F2FS_SEC_DBG_##type; \
+		node.entry[F2FS_SEC_DBG_##type].nr_ops++;	\
+	} while (0)
+#define sec_dbg_add_time(node, type, start) \
+	node.entry[F2FS_SEC_DBG_##type].cumulative_jiffies +=	\
+					(get_jiffies_64() - start)
+#define sec_dbg_start_jiffies(val) val = get_jiffies_64()
+#else
+#define sec_dbg_inc_cnt(node, type) (0)
+#define sec_dbg_add_time(node, type, start) (0)
+#define sec_dbg_start_jiffies(val) (0)
+#endif
 /*
  * Freeze all the FS-operations for checkpoint.
  */
@@ -1180,10 +1202,17 @@ static int block_operations(struct f2fs_sb_info *sbi)
 		.nr_to_write = LONG_MAX,
 		.for_reclaim = 0,
 	};
-	struct blk_plug plug;
 	int err = 0, cnt = 0;
+#ifdef CONFIG_F2FS_SEC_BLOCK_OPERATIONS_DEBUG
+	struct f2fs_sec_blkops_dbg dbg_entry = {0, };
+	u64 s_jiffies, elapsed_time;
 
-	blk_start_plug(&plug);
+	dbg_entry.start_time = local_clock();
+#endif
+	/*
+	 * Let's flush inline_data in dirty node pages.
+	 */
+	f2fs_flush_inline_data(sbi);
 
 retry_flush_quotas:
 	f2fs_lock_all(sbi);
@@ -1209,14 +1238,16 @@ retry_flush_quotas:
 retry_flush_dents:
 	/* write all the dirty dentry pages */
 	if (get_pages(sbi, F2FS_DIRTY_DENTS)) {
+		sec_dbg_inc_cnt(dbg_entry, DENTS);
+		sec_dbg_start_jiffies(s_jiffies);
 		f2fs_unlock_all(sbi);
 		err = f2fs_sync_dirty_inodes(sbi, DIR_INODE);
 		if (err)
 			goto out;
+		sec_dbg_add_time(dbg_entry, DENTS, s_jiffies);
 		cond_resched();
 		goto retry_flush_quotas;
 	}
-
 	/*
 	 * POR: we should ensure that there are no dirty node pages
 	 * until finishing nat/sit flush. inode->i_blocks can be updated.
@@ -1224,11 +1255,14 @@ retry_flush_dents:
 	down_write(&sbi->node_change);
 
 	if (get_pages(sbi, F2FS_DIRTY_IMETA)) {
+		sec_dbg_inc_cnt(dbg_entry, IMETA);
+		sec_dbg_start_jiffies(s_jiffies);
 		up_write(&sbi->node_change);
 		f2fs_unlock_all(sbi);
 		err = f2fs_sync_inode_meta(sbi);
 		if (err)
 			goto out;
+		sec_dbg_add_time(dbg_entry, IMETA, s_jiffies);
 		cond_resched();
 		goto retry_flush_quotas;
 	}
@@ -1237,6 +1271,8 @@ retry_flush_nodes:
 	down_write(&sbi->node_write);
 
 	if (get_pages(sbi, F2FS_DIRTY_NODES)) {
+		sec_dbg_inc_cnt(dbg_entry, NODES);
+		sec_dbg_start_jiffies(s_jiffies);
 		up_write(&sbi->node_write);
 		atomic_inc(&sbi->wb_sync_req[NODE]);
 		err = f2fs_sync_node_pages(sbi, &wbc, false, FS_CP_NODE_IO);
@@ -1246,6 +1282,8 @@ retry_flush_nodes:
 			f2fs_unlock_all(sbi);
 			goto out;
 		}
+		blk_flush_plug(current);
+		sec_dbg_add_time(dbg_entry, NODES, s_jiffies);
 		cond_resched();
 		goto retry_flush_nodes;
 	}
@@ -1257,7 +1295,24 @@ retry_flush_nodes:
 	__prepare_cp_block(sbi);
 	up_write(&sbi->node_change);
 out:
-	blk_finish_plug(&plug);
+#ifdef CONFIG_F2FS_SEC_BLOCK_OPERATIONS_DEBUG
+	dbg_entry.end_time = local_clock();
+
+	elapsed_time = dbg_entry.end_time - dbg_entry.start_time;
+	if (elapsed_time > (F2FS_SEC_BLKOPS_LOGGING_THR * NSEC_PER_SEC)) {
+		dbg_entry.ret_val = err;
+		dbg_entry.entry_idx = sbi->s_sec_blkops_total++;
+
+		memcpy(&(sbi->s_sec_dbg_entries[dbg_entry.entry_idx % F2FS_SEC_BLKOPS_ENTRIES]),
+				&dbg_entry, sizeof(struct f2fs_sec_blkops_dbg));
+
+		if (sbi->s_sec_blkops_max_elapsed < elapsed_time) {
+			sbi->s_sec_blkops_max_elapsed = elapsed_time;
+			memcpy(&(sbi->s_sec_dbg_max_entry),
+				&dbg_entry, sizeof(struct f2fs_sec_blkops_dbg));
+		}
+	}
+#endif
 	return err;
 }
 
@@ -1280,7 +1335,10 @@ void f2fs_wait_on_all_pages(struct f2fs_sb_info *sbi, int type)
 		if (unlikely(f2fs_cp_error(sbi)))
 			break;
 
-		io_schedule_timeout(HZ/50);
+		if (type == F2FS_DIRTY_META)
+			f2fs_sync_meta_pages(sbi, META, LONG_MAX,
+							FS_CP_META_IO);
+		io_schedule_timeout(DEFAULT_IO_TIMEOUT);
 	}
 	finish_wait(&sbi->cp_wait, &wait);
 }
@@ -1404,12 +1462,13 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	int err;
 
 	/* Flush all the NAT/SIT pages */
-	f2fs_sync_meta_pages(sbi, META, LONG_MAX, FS_CP_META_IO);
+	while (get_pages(sbi, F2FS_DIRTY_META)) {
+		f2fs_sync_meta_pages(sbi, META, LONG_MAX, FS_CP_META_IO);
+		if (unlikely(f2fs_cp_error(sbi)))
+			break;
+	}
 
-	/*
-	 * modify checkpoint
-	 * version number is already updated
-	 */
+	/* start to update checkpoint, cp ver is already updated previously */
 	ckpt->elapsed_time = cpu_to_le64(get_mtime(sbi, true));
 	ckpt->free_segment_count = cpu_to_le32(free_segments(sbi));
 	for (i = 0; i < NR_CURSEG_NODE_TYPE; i++) {
@@ -1477,6 +1536,14 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		for (i = 0; i < nm_i->nat_bits_blocks; i++)
 			f2fs_update_meta_page(sbi, nm_i->nat_bits +
 					(i << F2FS_BLKSIZE_BITS), blk + i);
+
+		/* Flush all the NAT BITS pages */
+		while (get_pages(sbi, F2FS_DIRTY_META)) {
+			f2fs_sync_meta_pages(sbi, META, LONG_MAX,
+							FS_CP_META_IO);
+			if (unlikely(f2fs_cp_error(sbi)))
+				break;
+		}
 	}
 
 	/* write out checkpoint buffer at block 0 */
@@ -1528,10 +1595,10 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	f2fs_wait_on_all_pages(sbi, F2FS_WB_CP_DATA);
 
 	/*
-	 * invalidate intermediate page cache borrowed from meta inode
-	 * which are used for migration of encrypted inode's blocks.
+	 * invalidate intermediate page cache borrowed from meta inode which are
+	 * used for migration of encrypted or verity inode's blocks.
 	 */
-	if (f2fs_sb_has_encrypt(sbi))
+	if (f2fs_sb_has_encrypt(sbi) || f2fs_sb_has_verity(sbi))
 		invalidate_mapping_pages(META_MAPPING(sbi),
 				MAIN_BLKADDR(sbi), MAX_BLKADDR(sbi) - 1);
 
@@ -1562,9 +1629,24 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	return unlikely(f2fs_cp_error(sbi)) ? -EIO : 0;
 }
 
-/*
- * We guarantee that this checkpoint procedure will not fail.
- */
+#define	CP_TIME_RECORD_UNIT	1000000
+static void f2fs_update_max_cp_interval(struct f2fs_sb_info *sbi)
+{
+	unsigned long long cp_interval = 0;
+
+	curr_cp_time = local_clock();
+	if (!priv_cp_time)
+		goto out;
+
+	cp_interval = ((curr_cp_time - priv_cp_time) / CP_TIME_RECORD_UNIT) ?
+		((curr_cp_time - priv_cp_time) / CP_TIME_RECORD_UNIT) : 1;
+
+	if (sbi->sec_stat.cp_max_interval < cp_interval)
+		sbi->sec_stat.cp_max_interval = cp_interval;
+out:
+	priv_cp_time = curr_cp_time;
+}
+
 int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
@@ -1579,7 +1661,8 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 			return 0;
 		f2fs_warn(sbi, "Start checkpoint disabled!");
 	}
-	mutex_lock(&sbi->cp_mutex);
+	if (cpc->reason != CP_RESIZE)
+		mutex_lock(&sbi->cp_mutex);
 
 	if (!is_sbi_flag_set(sbi, SBI_IS_DIRTY) &&
 		((cpc->reason & CP_FASTBOOT) || (cpc->reason & CP_SYNC) ||
@@ -1632,7 +1715,6 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 
 	f2fs_flush_sit_entries(sbi, cpc);
 
-	/* unlock all the fs_lock[] in do_checkpoint() */
 	err = do_checkpoint(sbi, cpc);
 	if (err)
 		f2fs_release_discard_addrs(sbi);
@@ -1641,15 +1723,18 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 stop:
 	unblock_operations(sbi);
 	stat_inc_cp_count(sbi->stat_info);
+	sbi->sec_stat.cp_cnt[STAT_CP_ALL]++;
+	f2fs_update_max_cp_interval(sbi);
 
 	if (cpc->reason & CP_RECOVERY)
 		f2fs_notice(sbi, "checkpoint: version = %llx", ckpt_ver);
 
-	/* do checkpoint periodically */
+	/* update CP_TIME to trigger checkpoint periodically */
 	f2fs_update_time(sbi, CP_TIME);
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "finish checkpoint");
 out:
-	mutex_unlock(&sbi->cp_mutex);
+	if (cpc->reason != CP_RESIZE)
+		mutex_unlock(&sbi->cp_mutex);
 	return err;
 }
 
@@ -1690,4 +1775,304 @@ void f2fs_destroy_checkpoint_caches(void)
 {
 	kmem_cache_destroy(ino_entry_slab);
 	kmem_cache_destroy(f2fs_inode_entry_slab);
+}
+
+static void set_cmd_queue_time(struct checkpoint_cmd *cmd)
+{
+	if (!cmd)
+		return;
+
+	cmd->queue_time = jiffies;
+#ifdef F2FS_SUPPORT_CHECKPOINT_CMD_TIME_NS
+	preempt_disable();
+	cmd->queue_time_ns = sched_clock();
+	preempt_enable();
+#endif
+}
+
+static void set_cmd_dispatch_time(struct checkpoint_cmd *cmd)
+{
+	if (!cmd)
+		return;
+
+	cmd->dispatch_time = jiffies;
+#ifdef F2FS_SUPPORT_CHECKPOINT_CMD_TIME_NS
+	preempt_disable();
+	cmd->dispatch_time_ns = sched_clock();
+	preempt_enable();
+#endif
+}
+
+static void set_cmd_start_time(struct checkpoint_cmd *cmd)
+{
+	if (!cmd)
+		return;
+
+	cmd->start_time = jiffies;
+#ifdef F2FS_SUPPORT_CHECKPOINT_CMD_TIME_NS
+	preempt_disable();
+	cmd->start_time_ns = sched_clock();
+	preempt_enable();
+#endif
+}
+
+static void set_cmd_complete_time(struct checkpoint_cmd *cmd)
+{
+	if (!cmd)
+		return;
+
+	cmd->complete_time = jiffies;
+#ifdef F2FS_SUPPORT_CHECKPOINT_CMD_TIME_NS
+	preempt_disable();
+	cmd->complete_time_ns = sched_clock();
+	preempt_enable();
+#endif
+}
+
+/* "cmd" can be null */
+static int __write_checkpoint_sync(struct f2fs_sb_info *sbi,
+		struct checkpoint_cmd *cmd, bool wait_lock)
+{
+	struct cp_control cpc = { .reason = CP_SYNC, };
+	int err;
+
+	if (!down_write_trylock(&sbi->gc_lock)) {
+		if (!wait_lock)
+			return -EBUSY;
+
+		down_write(&sbi->gc_lock);
+	}
+
+	set_cmd_start_time(cmd);
+	err = f2fs_write_checkpoint(sbi, &cpc);
+	set_cmd_complete_time(cmd);
+	up_write(&sbi->gc_lock);
+
+	return err;
+}
+
+/* @fs.sec -- 9f109bc9f7bdd952c961240c6e2e05ca -- */
+static int issue_checkpoint_thread(void *data)
+{
+	struct f2fs_sb_info *sbi = data;
+	struct f2fs_ckpt_cmd_control *ccc = sbi->ccc_info;
+	wait_queue_head_t *q = &ccc->ckpt_wait_queue;
+repeat:
+	if (kthread_should_stop())
+		return 0;
+
+	sb_start_intwrite(sbi->sb);
+
+	if (!llist_empty(&ccc->issue_list)) {
+		struct checkpoint_cmd *cmd, *next;
+		int ret;
+
+		ccc->dispatch_list = llist_del_all(&ccc->issue_list);
+		ccc->dispatch_list = llist_reverse_order(ccc->dispatch_list);
+
+		cmd = llist_entry(ccc->dispatch_list, struct checkpoint_cmd, llnode);
+		set_cmd_dispatch_time(cmd);
+
+		ret = __write_checkpoint_sync(sbi, cmd, true);
+		atomic_inc(&ccc->issued_ckpt);
+
+		llist_for_each_entry_safe(cmd, next,
+					  ccc->dispatch_list, llnode) {
+			set_cmd_complete_time(cmd);
+			cmd->ret = ret;
+			complete(&cmd->wait);
+		}
+		ccc->dispatch_list = NULL;
+	}
+
+	sb_end_intwrite(sbi->sb);
+
+	wait_event_interruptible(*q,
+		kthread_should_stop() || !llist_empty(&ccc->issue_list));
+	goto repeat;
+}
+
+static inline bool nice_cpu_sched(void)
+{
+	/* how can I check cpu power? is cpu number enough? */
+	return true;
+}
+
+static int flush_remained_checkpoint_cmd(struct f2fs_sb_info *sbi, struct checkpoint_cmd *nowait_cmd)
+{
+	struct f2fs_ckpt_cmd_control *ccc = sbi->ccc_info;
+	struct llist_node *list;
+	struct checkpoint_cmd *cmd = nowait_cmd;
+	struct checkpoint_cmd *tmp, *next;
+	int ret;
+
+	list = llist_del_all(&ccc->issue_list);
+	list = llist_reverse_order(list);
+	if (!list) {
+		/* already dispatched by issue_checkpoint_thread */
+		if (cmd) {
+			wait_for_completion(&cmd->wait);
+			atomic_dec(&ccc->issing_ckpt);
+			return cmd->ret;
+		}
+		return 0;
+	}
+
+	if (!cmd)
+		cmd = llist_entry(list, struct checkpoint_cmd, llnode);
+
+	set_cmd_dispatch_time(cmd);
+	ret = __write_checkpoint_sync(sbi, cmd, true);
+	atomic_inc(&ccc->issued_ckpt);
+
+	llist_for_each_entry_safe(tmp, next, list, llnode) {
+		if (unlikely(tmp == nowait_cmd)) {
+			cmd->ret = ret;
+			atomic_dec(&ccc->issing_ckpt);
+			continue;
+		}
+		tmp->ret = ret;
+		set_cmd_complete_time(tmp);
+		complete(&tmp->wait);
+	}
+
+	return ret;
+}
+
+static void init_checkpoint_cmd(struct checkpoint_cmd *cmd)
+{
+	memset(cmd, 0, sizeof(struct checkpoint_cmd));
+
+	cmd->owner = current;
+	init_completion(&cmd->wait);
+}
+
+int f2fs_set_issue_ckpt_ioprio(struct f2fs_sb_info *sbi, unsigned int ioprio)
+{
+	struct f2fs_ckpt_cmd_control *ccc = sbi->ccc_info;
+
+	if (!ccc || !ccc->ckpt_task)
+		return -ENOENT;
+
+	if (ioprio > 7)
+		return -EINVAL;
+
+	ioprio = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, ioprio);
+	return set_task_ioprio(ccc->ckpt_task, ioprio);
+}
+
+int f2fs_issue_checkpoint(struct f2fs_sb_info *sbi)
+{
+	struct f2fs_ckpt_cmd_control *ccc = sbi->ccc_info;
+	struct checkpoint_cmd cmd;
+	int ret;
+
+	if (!ccc || !ccc->ckpt_task)
+		return __write_checkpoint_sync(sbi, NULL, true);
+
+	/* if current_task is first one that triggers checkpoint and if it has
+	 * enough cpu time for checkpointing, it tries checkpoint itself.
+	 * otherwise, a checkpoint should be offloaded to issue_checkpoint_thread.
+	 */
+	atomic_inc(&ccc->accum_ckpt);
+	if (atomic_inc_return(&ccc->issing_ckpt) == 1 && nice_cpu_sched()) {
+		/* if checkpoint is in progress by other context,
+		 * just queue checkpoint_cmd
+		 */
+		ret = __write_checkpoint_sync(sbi, NULL, false);
+		if (ret == -EBUSY)
+			goto queue_cmd;
+
+		atomic_dec(&ccc->issing_ckpt);
+		atomic_inc(&ccc->issued_ckpt);
+		return ret;
+	}
+
+queue_cmd:
+	init_checkpoint_cmd(&cmd);
+
+	set_cmd_queue_time(&cmd);
+	llist_add(&cmd.llnode, &ccc->issue_list);
+
+	/* update issue_list before we wake up issue_checkpoint thread */
+	smp_mb();
+
+	if (waitqueue_active(&ccc->ckpt_wait_queue))
+		wake_up(&ccc->ckpt_wait_queue);
+
+	if (ccc->ckpt_task) {
+		wait_for_completion(&cmd.wait);
+		atomic_dec(&ccc->issing_ckpt);
+	} else {
+		flush_remained_checkpoint_cmd(sbi, &cmd);
+	}
+
+	return cmd.ret;
+}
+
+int f2fs_create_checkpoint_cmd_control(struct f2fs_sb_info *sbi)
+{
+	dev_t dev = sbi->sb->s_bdev->bd_dev;
+	unsigned int ioprio = F2FS_OPTION(sbi).ckpt_ioprio;
+	struct f2fs_ckpt_cmd_control *ccc;
+	bool need_free = true;
+
+	if (sbi->ccc_info) {
+		ccc = sbi->ccc_info;
+		if (ccc->ckpt_task)
+			return 0;
+
+		need_free = false;
+		goto init_thread;
+	}
+
+	ccc = f2fs_kzalloc(sbi, sizeof(struct f2fs_ckpt_cmd_control), GFP_KERNEL);
+	if (!ccc)
+		return -ENOMEM;
+	atomic_set(&ccc->issued_ckpt, 0);
+	atomic_set(&ccc->issing_ckpt, 0);
+	atomic_set(&ccc->accum_ckpt, 0);
+	init_waitqueue_head(&ccc->ckpt_wait_queue);
+	init_llist_head(&ccc->issue_list);
+	sbi->ccc_info = ccc;
+
+init_thread:
+	ccc->ckpt_task = kthread_run(issue_checkpoint_thread, sbi,
+				"f2fs_ckpt-%u:%u", MAJOR(dev), MINOR(dev));
+	if (IS_ERR(ccc->ckpt_task)) {
+		int err = PTR_ERR(ccc->ckpt_task);
+
+		if (need_free) {
+			kvfree(ccc);
+			sbi->ccc_info = NULL;
+		}
+		return err;
+	}
+
+	ioprio = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, ioprio);
+	set_task_ioprio(ccc->ckpt_task, ioprio);
+
+	return 0;
+}
+
+int f2fs_destroy_checkpoint_cmd_control(struct f2fs_sb_info *sbi, bool free)
+{
+	struct f2fs_ckpt_cmd_control *ccc = sbi->ccc_info;
+	int ret = 0;
+
+	if (ccc && ccc->ckpt_task) {
+		struct task_struct *ckpt_task = ccc->ckpt_task;
+
+		ccc->ckpt_task = NULL;
+		kthread_stop(ckpt_task);
+
+		ret = flush_remained_checkpoint_cmd(sbi, NULL);
+	}
+
+	if (free) {
+		kvfree(ccc);
+		sbi->ccc_info = NULL;
+	}
+
+	return ret;
 }

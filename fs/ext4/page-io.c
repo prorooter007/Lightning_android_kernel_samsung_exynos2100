@@ -100,10 +100,8 @@ static void ext4_finish_bio(struct bio *bio)
 				continue;
 			}
 			clear_buffer_async_write(bh);
-			if (bio->bi_status) {
-				set_buffer_write_io_error(bh);
+			if (bio->bi_status)
 				buffer_io_error(bh);
-			}
 		} while ((bh = bh->b_this_page) != head);
 		bit_spin_unlock(BH_Uptodate_Lock, &head->b_state);
 		local_irq_restore(flags);
@@ -352,6 +350,25 @@ void ext4_io_submit(struct ext4_io_submit *io)
 	io->io_bio = NULL;
 }
 
+#ifdef CONFIG_DDAR
+int ext4_io_submit_to_dd(struct inode *inode, struct ext4_io_submit *io)
+{
+	struct bio *bio = io->io_bio;
+
+	if (!fscrypt_dd_encrypted_inode(inode))
+		return -EOPNOTSUPP;
+
+	if (bio) {
+		int io_op_flags = io->io_wbc->sync_mode == WB_SYNC_ALL ?
+				  REQ_SYNC : 0;
+		bio_set_op_attrs(io->io_bio, REQ_OP_WRITE, io_op_flags);
+		fscrypt_dd_submit_bio(inode, io->io_bio);
+	}
+	io->io_bio = NULL;
+	return 0;
+}
+#endif
+
 void ext4_io_submit_init(struct ext4_io_submit *io,
 			 struct writeback_control *wbc)
 {
@@ -368,6 +385,7 @@ static int io_submit_init_bio(struct ext4_io_submit *io,
 	bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
 	if (!bio)
 		return -ENOMEM;
+	fscrypt_set_bio_crypt_ctx_bh(bio, bh, GFP_NOIO);
 	bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
 	bio_set_dev(bio, bh->b_bdev);
 	bio->bi_end_io = ext4_end_bio;
@@ -385,9 +403,13 @@ static int io_submit_add_bh(struct ext4_io_submit *io,
 {
 	int ret;
 
-	if (io->io_bio && bh->b_blocknr != io->io_next_block) {
+	if (io->io_bio && (bh->b_blocknr != io->io_next_block ||
+			   !fscrypt_mergeable_bio_bh(io->io_bio, bh))) {
 submit_and_retry:
-		ext4_io_submit(io);
+// CONFIG_DDAR [
+		if (ext4_io_submit_to_dd(inode, io) == -EOPNOTSUPP)
+			ext4_io_submit(io);
+// ] CONFIG_DDAR
 	}
 	if (io->io_bio == NULL) {
 		ret = io_submit_init_bio(io, bh);
@@ -458,7 +480,10 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 			if (!buffer_mapped(bh))
 				clear_buffer_dirty(bh);
 			if (io->io_bio)
-				ext4_io_submit(io);
+// CONFIG_DDAR [
+				if (ext4_io_submit_to_dd(inode, io) == -EOPNOTSUPP)
+					ext4_io_submit(io);
+// ] CONFIG_DDAR
 			continue;
 		}
 		if (buffer_new(bh))
@@ -476,7 +501,7 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 	 * (e.g. holes) to be unnecessarily encrypted, but this is rare and
 	 * can't happen in the common case of blocksize == PAGE_SIZE.
 	 */
-	if (IS_ENCRYPTED(inode) && S_ISREG(inode->i_mode) && nr_to_submit) {
+	if (fscrypt_inode_uses_fs_layer_crypto(inode) && nr_to_submit) {
 		gfp_t gfp_flags = GFP_NOFS;
 		unsigned int enc_bytes = round_up(len, i_blocksize(inode));
 
@@ -495,10 +520,14 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 			if (ret == -ENOMEM &&
 			    (io->io_bio || wbc->sync_mode == WB_SYNC_ALL)) {
 				gfp_flags = GFP_NOFS;
-				if (io->io_bio)
-					ext4_io_submit(io);
-				else
+				if (io->io_bio) {
+// CONFIG_DDAR [
+					if (ext4_io_submit_to_dd(inode, io) == -EOPNOTSUPP)
+						ext4_io_submit(io);
+// ] CONFIG_DDAR
+				} else {
 					gfp_flags |= __GFP_NOFAIL;
+				}
 				congestion_wait(BLK_RW_ASYNC, HZ/50);
 				goto retry_encrypt;
 			}

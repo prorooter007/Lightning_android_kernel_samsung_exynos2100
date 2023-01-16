@@ -208,7 +208,7 @@ __xfs_dir3_free_read(
 	/* Check things that we can't do in the verifier. */
 	fa = xfs_dir3_free_header_check(dp, fbno, *bpp);
 	if (fa) {
-		__xfs_buf_mark_corrupt(*bpp, fa);
+		xfs_verifier_error(*bpp, -EFSCORRUPTED, fa);
 		xfs_trans_brelse(tp, *bpp);
 		*bpp = NULL;
 		return -EFSCORRUPTED;
@@ -374,10 +374,8 @@ xfs_dir2_leaf_to_node(
 	leaf = lbp->b_addr;
 	ltp = xfs_dir2_leaf_tail_p(args->geo, leaf);
 	if (be32_to_cpu(ltp->bestcount) >
-				(uint)dp->i_d.di_size / args->geo->blksize) {
-		xfs_buf_mark_corrupt(lbp);
+				(uint)dp->i_d.di_size / args->geo->blksize)
 		return -EFSCORRUPTED;
-	}
 
 	/*
 	 * Copy freespace entries from the leaf block to the new block.
@@ -448,10 +446,8 @@ xfs_dir2_leafn_add(
 	 * Quick check just to make sure we are not going to index
 	 * into other peoples memory
 	 */
-	if (index < 0) {
-		xfs_buf_mark_corrupt(bp);
+	if (index < 0)
 		return -EFSCORRUPTED;
-	}
 
 	/*
 	 * If there are already the maximum number of leaf entries in
@@ -744,10 +740,8 @@ xfs_dir2_leafn_lookup_for_entry(
 	ents = dp->d_ops->leaf_ents_p(leaf);
 
 	xfs_dir3_leaf_check(dp, bp);
-	if (leafhdr.count <= 0) {
-		xfs_buf_mark_corrupt(bp);
+	if (leafhdr.count <= 0)
 		return -EFSCORRUPTED;
-	}
 
 	/*
 	 * Look up the hash value in the leaf entries.

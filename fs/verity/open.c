@@ -31,7 +31,7 @@ int fsverity_init_merkle_tree_params(struct merkle_tree_params *params,
 				     unsigned int log_blocksize,
 				     const u8 *salt, size_t salt_size)
 {
-	const struct fsverity_hash_alg *hash_alg;
+	struct fsverity_hash_alg *hash_alg;
 	int err;
 	u64 blocks;
 	u64 offset;
@@ -89,7 +89,7 @@ int fsverity_init_merkle_tree_params(struct merkle_tree_params *params,
 	 */
 
 	/* Compute number of levels and the number of blocks in each level */
-	blocks = ((u64)inode->i_size + params->block_size - 1) >> log_blocksize;
+	blocks = (inode->i_size + params->block_size - 1) >> log_blocksize;
 	pr_debug("Data is %lld bytes (%llu blocks)\n", inode->i_size, blocks);
 	while (blocks > 1) {
 		if (params->num_levels >= FS_VERITY_MAX_LEVELS) {
@@ -102,6 +102,7 @@ int fsverity_init_merkle_tree_params(struct merkle_tree_params *params,
 		/* temporarily using level_start[] to store blocks in level */
 		params->level_start[params->num_levels++] = blocks;
 	}
+	params->level0_blocks = params->level_start[0];
 
 	/* Compute the starting block of each level */
 	offset = 0;
@@ -126,7 +127,7 @@ out_err:
  * Compute the file measurement by hashing the fsverity_descriptor excluding the
  * signature and with the sig_size field set to 0.
  */
-static int compute_file_measurement(const struct fsverity_hash_alg *hash_alg,
+static int compute_file_measurement(struct fsverity_hash_alg *hash_alg,
 				    struct fsverity_descriptor *desc,
 				    u8 *measurement)
 {
@@ -329,6 +330,7 @@ EXPORT_SYMBOL_GPL(fsverity_prepare_setattr);
 
 /**
  * fsverity_cleanup_inode() - free the inode's verity info, if present
+ * @inode: an inode being evicted
  *
  * Filesystems must call this on inode eviction to free ->i_verity_info.
  */

@@ -86,7 +86,7 @@ static inline __u32 inotify_arg_to_mask(u32 arg)
 	mask = (FS_IN_IGNORED | FS_EVENT_ON_CHILD | FS_UNMOUNT);
 
 	/* mask off the flags used to open the fd */
-	mask |= (arg & INOTIFY_USER_MASK);
+	mask |= (arg & (IN_ALL_EVENTS | IN_ONESHOT | IN_EXCL_UNLINK));
 
 	return mask;
 }
@@ -701,6 +701,8 @@ SYSCALL_DEFINE3(inotify_add_watch, int, fd, const char __user *, pathname,
 	struct fsnotify_group *group;
 	struct inode *inode;
 	struct path path;
+	struct path alteredpath;
+	struct path *canonical_path = &path;
 	struct fd f;
 	int ret;
 	unsigned flags = 0;
@@ -746,14 +748,24 @@ SYSCALL_DEFINE3(inotify_add_watch, int, fd, const char __user *, pathname,
 			(mask & IN_ALL_EVENTS));
 	if (ret)
 		goto fput_and_out;
+	
+	/* support stacked filesystems */
+	if(path.dentry && path.dentry->d_op) {
+		if (path.dentry->d_op->d_canonical_path) {
+			path.dentry->d_op->d_canonical_path(&path, &alteredpath);
+			canonical_path = &alteredpath;
+			path_put(&path);
+		}
+	}
 
 	/* inode held in place by reference to path; group by fget on fd */
-	inode = path.dentry->d_inode;
+	inode = canonical_path->dentry->d_inode;
 	group = f.file->private_data;
 
 	/* create/update an inode mark */
 	ret = inotify_update_watch(group, inode, mask);
-	path_put(&path);
+
+	path_put(canonical_path);
 fput_and_out:
 	fdput(f);
 	return ret;
