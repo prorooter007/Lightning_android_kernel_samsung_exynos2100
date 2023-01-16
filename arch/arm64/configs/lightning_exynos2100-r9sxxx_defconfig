@@ -7444,3 +7444,8 @@ CONFIG_CORESIGHT_STM=y
 #
 # CONFIG_SEC_KUNIT is not set
 # end of KUnit support
+
+#
+# Lightning 
+#
+CONFIG_BOEFFLA_WL_BLOCKER=y
