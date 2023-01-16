@@ -146,6 +146,9 @@ static struct module *new_module(const char *modname)
 		p[strlen(p) - 2] = '\0';
 		mod->is_dot_o = 1;
 	}
+	/* strip trailing .lto */
+	if (strends(p, ".lto"))
+		p[strlen(p) - 4] = '\0';
 
 	/* add to list */
 	mod->name = p;
@@ -1131,7 +1134,7 @@ static const struct sectioncheck sectioncheck[] = {
 },
 /* Do not export init/exit functions or data */
 {
-	.fromsec = { "___ksymtab*", NULL },
+	.fromsec = { "__ksymtab*", NULL },
 	.bad_tosec = { INIT_SECTIONS, EXIT_SECTIONS, NULL },
 	.mismatch = EXPORT_TO_INIT_EXIT,
 	.symbol_white_list = { DEFAULT_SYMBOL_WHITE_LIST, NULL },
@@ -1283,8 +1286,7 @@ static int secref_whitelist(const struct sectioncheck *mismatch,
 
 static inline int is_arm_mapping_symbol(const char *str)
 {
-	return str[0] == '$' &&
-	       (str[1] == 'a' || str[1] == 'd' || str[1] == 't' || str[1] == 'x')
+	return str[0] == '$' && strchr("axtd", str[1])
 	       && (str[2] == '\0' || str[2] == '.');
 }
 
@@ -1999,8 +2001,12 @@ static char *remove_dot(char *s)
 
 	if (n && s[n]) {
 		size_t m = strspn(s + n + 1, "0123456789");
-		if (m && (s[n + m + 1] == '.' || s[n + m + 1] == 0))
+		if (m && (s[n + m] == '.' || s[n + m] == 0))
 			s[n] = 0;
+
+		/* strip trailing .lto */
+		if (strends(s, ".lto"))
+			s[strlen(s) - 4] = '\0';
 	}
 	return s;
 }
@@ -2259,8 +2265,12 @@ static int check_modname_len(struct module *mod)
  **/
 static void add_header(struct buffer *b, struct module *mod)
 {
-	buf_printf(b, "#include <linux/build-salt.h>\n");
 	buf_printf(b, "#include <linux/module.h>\n");
+	/*
+	 * Include build-salt.h after module.h in order to
+	 * inherit the definitions.
+	 */
+	buf_printf(b, "#include <linux/build-salt.h>\n");
 	buf_printf(b, "#include <linux/vermagic.h>\n");
 	buf_printf(b, "#include <linux/compiler.h>\n");
 	buf_printf(b, "\n");
