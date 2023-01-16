@@ -27,6 +27,7 @@
 #include <linux/backing-dev.h>
 #include <linux/string.h>
 #include <linux/msg.h>
+#include <linux/task_integrity.h>
 #include <net/flow.h>
 
 #define MAX_LSM_EVM_XATTR	2
@@ -646,10 +647,17 @@ static void __init lsm_early_task(struct task_struct *task)
  *	This is a hook that returns a value.
  */
 
+/*
+ * security_integrity_current() is added,
+ * which has a dependency of CONFIG_KDP_CRED.
+ * security_integrity_current is added to check integrity of credential context.
+ * if CONFIG_KDP_CRED is disabled, it will always return 0.
+ */
 #define call_void_hook(FUNC, ...)				\
 	do {							\
 		struct security_hook_list *P;			\
 								\
+		if(security_integrity_current()) break;		\
 		hlist_for_each_entry(P, &security_hook_heads.FUNC, list) \
 			P->hook.FUNC(__VA_ARGS__);		\
 	} while (0)
@@ -659,6 +667,9 @@ static void __init lsm_early_task(struct task_struct *task)
 	do {							\
 		struct security_hook_list *P;			\
 								\
+		RC = security_integrity_current();		\
+		if (RC != 0)					\
+			break;					\
 		hlist_for_each_entry(P, &security_hook_heads.FUNC, list) { \
 			RC = P->hook.FUNC(__VA_ARGS__);		\
 			if (RC != 0)				\
@@ -784,6 +795,9 @@ int security_bprm_check(struct linux_binprm *bprm)
 	ret = call_int_hook(bprm_check_security, 0, bprm);
 	if (ret)
 		return ret;
+	ret = five_bprm_check(bprm);
+	if (ret)
+		return ret;
 	return ima_bprm_check(bprm);
 }
 
@@ -802,22 +816,9 @@ int security_fs_context_dup(struct fs_context *fc, struct fs_context *src_fc)
 	return call_int_hook(fs_context_dup, 0, fc, src_fc);
 }
 
-int security_fs_context_parse_param(struct fs_context *fc,
-				    struct fs_parameter *param)
+int security_fs_context_parse_param(struct fs_context *fc, struct fs_parameter *param)
 {
-	struct security_hook_list *hp;
-	int trc;
-	int rc = -ENOPARAM;
-
-	hlist_for_each_entry(hp, &security_hook_heads.fs_context_parse_param,
-			     list) {
-		trc = hp->hook.fs_context_parse_param(fc, param);
-		if (trc == 0)
-			rc = 0;
-		else if (trc != -ENOPARAM)
-			return trc;
-	}
-	return rc;
+	return call_int_hook(fs_context_parse_param, -ENOPARAM, fc, param);
 }
 
 int security_sb_alloc(struct super_block *sb)
@@ -1253,6 +1254,9 @@ int security_inode_setxattr(struct dentry *dentry, const char *name,
 		ret = cap_inode_setxattr(dentry, name, value, size, flags);
 	if (ret)
 		return ret;
+	ret = five_inode_setxattr(dentry, name, value, size);
+	if (ret)
+		return ret;
 	ret = ima_inode_setxattr(dentry, name, value, size);
 	if (ret)
 		return ret;
@@ -1295,6 +1299,9 @@ int security_inode_removexattr(struct dentry *dentry, const char *name)
 	ret = call_int_hook(inode_removexattr, 1, dentry, name);
 	if (ret == 1)
 		ret = cap_inode_removexattr(dentry, name);
+	if (ret)
+		return ret;
+	ret = five_inode_removexattr(dentry, name);
 	if (ret)
 		return ret;
 	ret = ima_inode_removexattr(dentry, name);
@@ -1463,6 +1470,9 @@ int security_mmap_file(struct file *file, unsigned long prot,
 					mmap_prot(file, prot), flags);
 	if (ret)
 		return ret;
+	ret = five_file_mmap(file, prot);
+	if (ret)
+		return ret;
 	return ima_file_mmap(file, prot);
 }
 
@@ -1511,7 +1521,11 @@ int security_file_open(struct file *file)
 	if (ret)
 		return ret;
 
-	return fsnotify_perm(file, MAY_OPEN);
+	ret = fsnotify_perm(file, MAY_OPEN);
+	if (ret)
+		return ret;
+
+	return five_file_open(file);
 }
 
 int security_task_alloc(struct task_struct *task, unsigned long clone_flags)
@@ -1529,6 +1543,7 @@ int security_task_alloc(struct task_struct *task, unsigned long clone_flags)
 void security_task_free(struct task_struct *task)
 {
 	call_void_hook(task_free, task);
+	five_task_free(task);
 
 	kfree(task->security);
 	task->security = NULL;
@@ -1558,8 +1573,17 @@ void security_cred_free(struct cred *cred)
 
 	call_void_hook(cred_free, cred);
 
+#ifdef CONFIG_KDP_CRED
+	if (is_kdp_protect_addr((unsigned long)cred)) {
+		kdp_free_security((unsigned long)cred->security);
+		uh_call(UH_APP_KDP, SELINUX_CRED_FREE, (u64) &cred->security, 0, 0, 0);
+	} else {
+#endif
 	kfree(cred->security);
 	cred->security = NULL;
+#ifdef CONFIG_KDP_CRED
+	}
+#endif
 }
 
 int security_prepare_creds(struct cred *new, const struct cred *old, gfp_t gfp)
@@ -2417,3 +2441,30 @@ int security_locked_down(enum lockdown_reason what)
 	return call_int_hook(locked_down, 0, what);
 }
 EXPORT_SYMBOL(security_locked_down);
+
+#ifdef CONFIG_PERF_EVENTS
+int security_perf_event_open(struct perf_event_attr *attr, int type)
+{
+	return call_int_hook(perf_event_open, 0, attr, type);
+}
+
+int security_perf_event_alloc(struct perf_event *event)
+{
+	return call_int_hook(perf_event_alloc, 0, event);
+}
+
+void security_perf_event_free(struct perf_event *event)
+{
+	call_void_hook(perf_event_free, event);
+}
+
+int security_perf_event_read(struct perf_event *event)
+{
+	return call_int_hook(perf_event_read, 0, event);
+}
+
+int security_perf_event_write(struct perf_event *event)
+{
+	return call_int_hook(perf_event_write, 0, event);
+}
+#endif /* CONFIG_PERF_EVENTS */
