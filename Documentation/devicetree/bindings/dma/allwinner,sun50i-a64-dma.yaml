@@ -58,7 +58,7 @@ if:
 then:
   properties:
     clocks:
-      minItems: 2
+      maxItems: 2
 
   required:
     - clock-names
