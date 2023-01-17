@@ -7,11 +7,11 @@ DIR="$(pwd)"
 PARENT_DIR="$(pwd)"
 
 echo "Cloning dependencies"
-git clone --branch main_2 https://github.com/prorooter007/android_kernel_samsung_exynos2100 kernel
+git clone --depth=1 --branch main_2 https://github.com/prorooter007/android_kernel_samsung_exynos2100 kernel
 cd kernel 
-git clone --branch android-9.0.0_r59 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
-git clone https://github.com/afaneh-toolchain/prebuilts_clang_host_linux-x86_clang-r383902 clang-r383902
-git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
+git clone --depth=1 --branch android-9.0.0_r59 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
+git clone --depth=1 https://github.com/afaneh-toolchain/prebuilts_clang_host_linux-x86_clang-r383902 clang-r383902
+git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
 echo "Done"
 KERNEL_DIR=$(pwd)
 OUT_DIR="$(pwd)/out"
