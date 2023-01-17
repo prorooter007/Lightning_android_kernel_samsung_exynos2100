@@ -15,7 +15,6 @@ jobs:
            cd predator
            wget https://raw.githubusercontent.com/prorooter007/android_kernel_samsung_exynos2100/main_2/build_menu
            source build_menu
-   parallelism: 4
 workflows:
   version: 2.1
   cooking:
