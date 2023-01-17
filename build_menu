@@ -73,8 +73,6 @@ STD=`echo -e "\033[0m"`		# Text Clear
     sed -i "s/insert_line/#insert_line/g" anykernel.sh
     sed -i "s/append_file/#append_file/g" anykernel.sh
     sed -i "s/patch_fstab/#patch_fstab/g" anykernel.sh
-    sed -i "s/dump_boot/split_boot/g" anykernel.sh
-    sed -i "s/write_boot/flash_boot/g" anykernel.sh
     zip -r9 "$(pwd)/exynos2100-r9sxxx_kernel_.zip" * -x .git README.md *placeholder
     
     curl https://bashupload.com/$REPACK_DIR/exynos2100-r9sxxx_kernel_.zip --data-binary @$REPACK_DIR/exynos2100-r9sxxx_kernel_.zip
