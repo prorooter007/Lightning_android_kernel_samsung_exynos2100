@@ -417,6 +417,7 @@ static void nfsd_shutdown_net(struct net *net)
 
 	nfsd_file_cache_purge(net);
 	nfs4_state_shutdown_net(net);
+	nfsd_file_cache_shutdown_net(net);
 	if (nn->lockd_up) {
 		lockd_down(net);
 		nn->lockd_up = 0;
