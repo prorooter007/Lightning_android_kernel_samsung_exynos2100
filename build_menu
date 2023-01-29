@@ -9,7 +9,6 @@ PARENT_DIR="$(pwd)"
 echo "Cloning dependencies"
 git clone --depth=1 --branch testing_2 https://github.com/prorooter007/android_kernel_samsung_exynos2100 kernel
 cd kernel 
-curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 git clone --depth=1 --branch android-11.0.0_r48 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
 git clone --depth=1  https://github.com/prorooter007/android_prebuilts_clang_host_linux-x86_clang-6877366 clang-r383902
 git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
