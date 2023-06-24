@@ -24,7 +24,6 @@
 #include <linux/user_namespace.h>
 #include <linux/refcount.h>
 #include <linux/kernel_stat.h>
-#include <linux/android_kabi.h>
 
 #include <linux/cgroup-defs.h>
 
@@ -68,8 +67,6 @@ struct css_task_iter {
 	struct css_set			*cur_dcset;
 	struct task_struct		*cur_task;
 	struct list_head		iters_node;	/* css_set->task_iters */
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 extern struct cgroup_root cgrp_dfl_root;
@@ -673,8 +670,6 @@ static inline struct psi_group *cgroup_psi(struct cgroup *cgrp)
 	return &cgrp->psi;
 }
 
-bool cgroup_psi_enabled(void);
-
 static inline void cgroup_init_kthreadd(void)
 {
 	/*
@@ -738,11 +733,6 @@ static inline struct cgroup *cgroup_parent(struct cgroup *cgrp)
 static inline struct psi_group *cgroup_psi(struct cgroup *cgrp)
 {
 	return NULL;
-}
-
-static inline bool cgroup_psi_enabled(void)
-{
-	return false;
 }
 
 static inline bool task_under_cgroup_hierarchy(struct task_struct *task,
