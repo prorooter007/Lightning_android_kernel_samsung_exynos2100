@@ -933,60 +933,6 @@ Enables/disables scheduler statistics. Enabling this feature
 incurs a small amount of overhead in the scheduler but is
 useful for debugging and performance tuning.
 
-sched_util_clamp_min:
-=====================
-
-Max allowed *minimum* utilization.
-
-Default value is 1024, which is the maximum possible value.
-
-It means that any requested uclamp.min value cannot be greater than
-sched_util_clamp_min, i.e., it is restricted to the range
-[0:sched_util_clamp_min].
-
-sched_util_clamp_max:
-=====================
-
-Max allowed *maximum* utilization.
-
-Default value is 1024, which is the maximum possible value.
-
-It means that any requested uclamp.max value cannot be greater than
-sched_util_clamp_max, i.e., it is restricted to the range
-[0:sched_util_clamp_max].
-
-sched_util_clamp_min_rt_default:
-================================
-
-By default Linux is tuned for performance. Which means that RT tasks always run
-at the highest frequency and most capable (highest capacity) CPU (in
-heterogeneous systems).
-
-Uclamp achieves this by setting the requested uclamp.min of all RT tasks to
-1024 by default, which effectively boosts the tasks to run at the highest
-frequency and biases them to run on the biggest CPU.
-
-This knob allows admins to change the default behavior when uclamp is being
-used. In battery powered devices particularly, running at the maximum
-capacity and frequency will increase energy consumption and shorten the battery
-life.
-
-This knob is only effective for RT tasks which the user hasn't modified their
-requested uclamp.min value via sched_setattr() syscall.
-
-This knob will not escape the range constraint imposed by sched_util_clamp_min
-defined above.
-
-For example if
-
-	sched_util_clamp_min_rt_default = 800
-	sched_util_clamp_min = 600
-
-Then the boost will be clamped to 600 because 800 is outside of the permissible
-range of [0:600]. This could happen for instance if a powersave mode will
-restrict all boosts temporarily by modifying sched_util_clamp_min. As soon as
-this restriction is lifted, the requested sched_util_clamp_min_rt_default
-will take effect.
 
 sg-big-buff:
 ============
@@ -1178,6 +1124,27 @@ that time, kernel debugging information is displayed on console.
 NMI switch that most IA32 servers have fires unknown NMI up, for
 example.  If a system hangs up, try pressing the NMI switch.
 
+
+unprivileged_bpf_disabled:
+==========================
+
+Writing 1 to this entry will disable unprivileged calls to ``bpf()``;
+once disabled, calling ``bpf()`` without ``CAP_SYS_ADMIN`` will return
+``-EPERM``. Once set to 1, this can't be cleared from the running kernel
+anymore.
+
+Writing 2 to this entry will also disable unprivileged calls to ``bpf()``,
+however, an admin can still change this setting later on, if needed, by
+writing 0 or 1 to this entry.
+
+If ``BPF_UNPRIV_DEFAULT_OFF`` is enabled in the kernel config, then this
+entry will default to 2 instead of 0.
+
+= =============================================================
+0 Unprivileged calls to ``bpf()`` are enabled
+1 Unprivileged calls to ``bpf()`` are disabled without recovery
+2 Unprivileged calls to ``bpf()`` are disabled
+= =============================================================
 
 watchdog:
 =========
