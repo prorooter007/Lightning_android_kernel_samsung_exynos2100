@@ -111,6 +111,8 @@ int __ext4_check_dir_entry(const char *function, unsigned int line,
 		error_msg = "inode out of bounds";
 	else
 		return 0;
+	/* @fs.sec -- e5c3ce7f01257fd22ad1329270d5fe928a3f9dc4 -- */
+	print_bh(dir->i_sb, bh, 0, EXT4_BLOCK_SIZE(dir->i_sb));
 
 	if (filp)
 		ext4_error_file(filp, function, line, bh->b_blocknr,
@@ -139,9 +141,11 @@ static int ext4_readdir(struct file *file, struct dir_context *ctx)
 	struct buffer_head *bh = NULL;
 	struct fscrypt_str fstr = FSTR_INIT(NULL, 0);
 
-	err = fscrypt_prepare_readdir(inode);
-	if (err)
-		return err;
+	if (IS_ENCRYPTED(inode)) {
+		err = fscrypt_get_encryption_info(inode);
+		if (err)
+			return err;
+	}
 
 	if (is_dx_dir(inode)) {
 		err = ext4_dx_readdir(file, ctx);
@@ -167,7 +171,7 @@ static int ext4_readdir(struct file *file, struct dir_context *ctx)
 	}
 
 	if (IS_ENCRYPTED(inode)) {
-		err = fscrypt_fname_alloc_buffer(EXT4_NAME_LEN, &fstr);
+		err = fscrypt_fname_alloc_buffer(inode, EXT4_NAME_LEN, &fstr);
 		if (err < 0)
 			return err;
 	}
@@ -639,6 +643,13 @@ finished:
 	return 0;
 }
 
+static int ext4_dir_open(struct inode * inode, struct file * filp)
+{
+	if (IS_ENCRYPTED(inode))
+		return fscrypt_get_encryption_info(inode) ? -EACCES : 0;
+	return 0;
+}
+
 static int ext4_release_dir(struct inode *inode, struct file *filp)
 {
 	if (filp->private_data)
@@ -680,5 +691,6 @@ const struct file_operations ext4_dir_operations = {
 	.compat_ioctl	= ext4_compat_ioctl,
 #endif
 	.fsync		= ext4_sync_file,
+	.open		= ext4_dir_open,
 	.release	= ext4_release_dir,
 };
