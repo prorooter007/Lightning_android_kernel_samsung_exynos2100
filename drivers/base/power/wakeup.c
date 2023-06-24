@@ -858,7 +858,7 @@ void pm_print_active_wakeup_sources(void)
 	srcuidx = srcu_read_lock(&wakeup_srcu);
 	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
 		if (ws->active) {
-			pm_pr_dbg("active wakeup source: %s\n", ws->name);
+			pr_info("active wakeup source: %s\n", ws->name);
 			active = 1;
 		} else if (!active &&
 			   (!last_activity_ws ||
@@ -869,7 +869,7 @@ void pm_print_active_wakeup_sources(void)
 	}
 
 	if (!active && last_activity_ws)
-		pm_pr_dbg("last active wakeup source: %s\n",
+		pr_info("last active wakeup source: %s\n",
 			last_activity_ws->name);
 	srcu_read_unlock(&wakeup_srcu, srcuidx);
 }
@@ -922,6 +922,7 @@ void pm_system_cancel_wakeup(void)
 {
 	atomic_dec_if_positive(&pm_abort_suspend);
 }
+EXPORT_SYMBOL_GPL(pm_system_cancel_wakeup);
 
 void pm_wakeup_clear(bool reset)
 {

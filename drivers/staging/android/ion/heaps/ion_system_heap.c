@@ -23,7 +23,12 @@
 static gfp_t high_order_gfp_flags = (GFP_HIGHUSER | __GFP_ZERO | __GFP_NOWARN |
 				     __GFP_NORETRY) & ~__GFP_RECLAIM;
 static gfp_t low_order_gfp_flags  = GFP_HIGHUSER | __GFP_ZERO;
+#ifdef CONFIG_HUGEPAGE_POOL
+#include <linux/hugepage_pool.h>
+static const unsigned int orders[] = {HUGEPAGE_ORDER, 4, 0};
+#else
 static const unsigned int orders[] = {8, 4, 0};
+#endif
 
 static int order_to_index(unsigned int order)
 {
@@ -86,6 +91,11 @@ static struct page *alloc_largest_available(struct ion_system_heap *heap,
 		if (max_order < orders[i])
 			continue;
 
+#ifdef CONFIG_HUGEPAGE_POOL
+		if (orders[i] == HUGEPAGE_ORDER &&
+				!is_hugepage_allowed(current, orders[i], true, HPAGE_ION))
+			continue;
+#endif
 		page = alloc_buffer_page(heap, buffer, orders[i]);
 		if (!page)
 			continue;
@@ -238,6 +248,14 @@ static int ion_system_heap_create_pools(struct ion_page_pool **pools)
 		struct ion_page_pool *pool;
 		gfp_t gfp_flags = low_order_gfp_flags;
 
+		/*
+		 * Enable NOWARN on larger order allocations, as
+		 * we will fall back to 0-order if things fail.
+		 * This avoids warning noise in dmesg.
+		 */
+		if (orders[i] > 0)
+			gfp_flags |= __GFP_NOWARN;
+
 		if (orders[i] > 4)
 			gfp_flags = high_order_gfp_flags;
 
@@ -285,6 +303,6 @@ static void __exit ion_system_heap_exit(void)
 	ion_system_heap_destroy_pools(system_heap.pools);
 }
 
-module_init(ion_system_heap_init);
+subsys_initcall(ion_system_heap_init);
 module_exit(ion_system_heap_exit);
 MODULE_LICENSE("GPL v2");
