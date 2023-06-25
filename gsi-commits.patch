@@ -752,13 +752,13 @@ Subject: [PATCH 09/10] ARM64: configs: Set androidboot.boot_devices
 Co-authored-by: Tim Zimmermann <tim@linux4.de>
 Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
 ---
- arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig | 3 ++-
+ arch/arm64/configs/exynos2100-r9sxxx_defconfig | 3 ++-
  1 file changed, 2 insertions(+), 1 deletion(-)
 
-diff --git a/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig b/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
+diff --git a/arch/arm64/configs/exynos2100-r9sxxx_defconfig b/arch/arm64/configs/exynos2100-r9sxxx_defconfig
 index bddca0e8315f3..f7653d5c63dfd 100644
---- a/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
-+++ b/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
+--- a/arch/arm64/configs/exynos2100-r9sxxx_defconfig
++++ b/arch/arm64/configs/exynos2100-r9sxxx_defconfig
 @@ -451,7 +451,8 @@ CONFIG_RANDOMIZE_MODULE_REGION_FULL=y
  #
  # Boot options
@@ -781,13 +781,13 @@ Subject: [PATCH 10/10] ARM64: configs: afaneh_[o1][t2][p3]s_defconfig: Enable
 
 Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
 ---
- arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig | 2 ++
+ arch/arm64/configs/exynos2100-r9sxxx_defconfig | 2 ++
  1 file changed, 2 insertions(+)
 
-diff --git a/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig b/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
+diff --git a/arch/arm64/configs/exynos2100-r9sxxx_defconfig b/arch/arm64/configs/exynos2100-r9sxxx_defconfig
 index f7653d5c63dfd..dc084038be6c2 100644
---- a/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
-+++ b/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
+--- a/arch/arm64/configs/exynos2100-r9sxxx_defconfig
++++ b/arch/arm64/configs/exynos2100-r9sxxx_defconfig
 @@ -6840,6 +6840,8 @@ CONFIG_SECURITY_SELINUX=y
  # CONFIG_SECURITY_SELINUX_BOOTPARAM is not set
  # CONFIG_SECURITY_SELINUX_DISABLE is not set
