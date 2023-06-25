@@ -9,4 +9,7 @@ arch/x86/boot/bzImage
 vmlinux
 System.map
 Module.symvers
+vmlinux.symvers
+modules.builtin
+modules.builtin.modinfo
 "

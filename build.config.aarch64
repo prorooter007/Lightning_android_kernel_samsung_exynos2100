@@ -12,4 +12,7 @@ arch/arm64/boot/Image
 vmlinux
 System.map
 Module.symvers
+vmlinux.symvers
+modules.builtin
+modules.builtin.modinfo
 "
