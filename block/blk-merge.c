@@ -7,6 +7,9 @@
 #include <linux/bio.h>
 #include <linux/blkdev.h>
 #include <linux/scatterlist.h>
+#ifndef __GENKSYMS__
+#include <linux/blk-cgroup.h>
+#endif
 
 #include <trace/events/block.h>
 
@@ -571,6 +574,9 @@ static inline unsigned int blk_rq_get_max_segments(struct request *rq)
 static inline int ll_new_hw_segment(struct request *req, struct bio *bio,
 		unsigned int nr_phys_segs)
 {
+	if (!blk_cgroup_mergeable(req, bio))
+		goto no_merge;
+
 	if (blk_integrity_merge_bio(req->q, req, bio) == false)
 		goto no_merge;
 
@@ -600,13 +606,13 @@ int ll_back_merge_fn(struct request *req, struct bio *bio, unsigned int nr_segs)
 	if (blk_integrity_rq(req) &&
 	    integrity_req_gap_back_merge(req, bio))
 		return 0;
-	if (!bio_crypt_ctx_back_mergeable(req, bio))
-		return 0;
 	if (blk_rq_sectors(req) + bio_sectors(bio) >
 	    blk_rq_get_max_sectors(req, blk_rq_pos(req))) {
 		req_set_nomerge(req->q, req);
 		return 0;
 	}
+	if (!bio_crypt_ctx_mergeable(req->bio, blk_rq_bytes(req), bio))
+		return 0;
 
 	return ll_new_hw_segment(req, bio, nr_segs);
 }
@@ -618,13 +624,13 @@ int ll_front_merge_fn(struct request *req, struct bio *bio, unsigned int nr_segs
 	if (blk_integrity_rq(req) &&
 	    integrity_req_gap_front_merge(req, bio))
 		return 0;
-	if (!bio_crypt_ctx_front_mergeable(req, bio))
-		return 0;
 	if (blk_rq_sectors(req) + bio_sectors(bio) >
 	    blk_rq_get_max_sectors(req, bio->bi_iter.bi_sector)) {
 		req_set_nomerge(req->q, req);
 		return 0;
 	}
+	if (!bio_crypt_ctx_mergeable(bio, bio->bi_iter.bi_size, req->bio))
+		return 0;
 
 	return ll_new_hw_segment(req, bio, nr_segs);
 }
@@ -666,10 +672,13 @@ static int ll_merge_requests_fn(struct request_queue *q, struct request *req,
 	if (total_phys_segments > blk_rq_get_max_segments(req))
 		return 0;
 
+	if (!blk_cgroup_mergeable(req, next->bio))
+		return 0;
+
 	if (blk_integrity_merge_rq(q, req, next) == false)
 		return 0;
 
-	if (!bio_crypt_ctx_merge_rq(req, next))
+	if (!bio_crypt_ctx_mergeable(req->bio, blk_rq_bytes(req), next->bio))
 		return 0;
 
 	/* Merge is OK... */
@@ -720,21 +729,6 @@ static void blk_account_io_merge(struct request *req)
 		hd_struct_put(part);
 		part_stat_unlock();
 	}
-}
-/*
- * Two cases of handling DISCARD merge:
- * If max_discard_segments > 1, the driver takes every bio
- * as a range and send them to controller together. The ranges
- * needn't to be contiguous.
- * Otherwise, the bios/requests will be handled as same as
- * others which should be contiguous.
- */
-static inline bool blk_discard_mergable(struct request *req)
-{
-	if (req_op(req) == REQ_OP_DISCARD &&
-	    queue_max_discard_segments(req->q) > 1)
-		return true;
-	return false;
 }
 
 static enum elv_merge blk_try_req_merge(struct request *req,
@@ -892,12 +886,12 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 	if (rq->rq_disk != bio->bi_disk)
 		return false;
 
-	/* only merge integrity protected bio into ditto rq */
-	if (blk_integrity_merge_bio(rq->q, rq, bio) == false)
+	/* don't merge across cgroup boundaries */
+	if (!blk_cgroup_mergeable(rq, bio))
 		return false;
 
-	/* Only merge if the crypt contexts are compatible */
-	if (!bio_crypt_rq_ctx_compatible(rq, bio))
+	/* only merge integrity protected bio into ditto rq */
+	if (blk_integrity_merge_bio(rq->q, rq, bio) == false)
 		return false;
 
 	/* must be using the same buffer */
@@ -913,6 +907,10 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 		return false;
 
 	if (rq->ioprio != bio_prio(bio))
+		return false;
+
+	/* Only merge if the crypt contexts are compatible */
+	if (!bio_crypt_ctx_compatible(bio, rq->bio))
 		return false;
 
 	return true;
