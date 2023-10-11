@@ -41,6 +41,7 @@
 #include <linux/percpu.h>
 #include <linux/thread_info.h>
 #include <linux/prctl.h>
+#include <trace/hooks/fpsimd.h>
 
 #include <asm/alternative.h>
 #include <asm/arch_gicv3.h>
@@ -54,10 +55,11 @@
 #include <asm/pointer_auth.h>
 #include <asm/scs.h>
 #include <asm/stacktrace.h>
+#include <trace/hooks/minidump.h>
 
 #if defined(CONFIG_STACKPROTECTOR) && !defined(CONFIG_STACKPROTECTOR_PER_TASK)
 #include <linux/stackprotector.h>
-unsigned long __stack_chk_guard __read_mostly;
+unsigned long __stack_chk_guard __ro_after_init;
 EXPORT_SYMBOL(__stack_chk_guard);
 #endif
 
@@ -253,6 +255,7 @@ void __show_regs(struct pt_regs *regs)
 		top_reg = 29;
 	}
 
+	trace_android_vh_show_regs(regs);
 	show_regs_print_info(KERN_DEFAULT);
 	print_pstate(regs);
 
@@ -289,6 +292,17 @@ void show_regs(struct pt_regs * regs)
 	__show_regs(regs);
 	dump_backtrace(regs, NULL);
 }
+
+#ifdef CONFIG_SEC_DEBUG_AUTO_COMMENT
+void show_regs_auto_comment(struct pt_regs * regs, bool comm)
+{
+	__show_regs(regs);
+	if (comm)
+		dump_backtrace_auto_comment(regs, NULL);
+	else
+		dump_backtrace(regs, NULL);
+}
+#endif
 
 static void tls_thread_flush(void)
 {
@@ -496,34 +510,26 @@ static void entry_task_switch(struct task_struct *next)
 
 /*
  * ARM erratum 1418040 handling, affecting the 32bit view of CNTVCT.
- * Assuming the virtual counter is enabled at the beginning of times:
- *
- * - disable access when switching from a 64bit task to a 32bit task
- * - enable access when switching from a 32bit task to a 64bit task
+ * Ensure access is disabled when switching to a 32bit task, ensure
+ * access is enabled when switching to a 64bit task.
  */
-static void erratum_1418040_thread_switch(struct task_struct *prev,
-					  struct task_struct *next)
+static void erratum_1418040_thread_switch(struct task_struct *next)
 {
-	bool prev32, next32;
-	u64 val;
-
-	if (!IS_ENABLED(CONFIG_ARM64_ERRATUM_1418040))
+	if (!IS_ENABLED(CONFIG_ARM64_ERRATUM_1418040) ||
+	    !this_cpu_has_cap(ARM64_WORKAROUND_1418040))
 		return;
 
-	prev32 = is_compat_thread(task_thread_info(prev));
-	next32 = is_compat_thread(task_thread_info(next));
-
-	if (prev32 == next32 || !this_cpu_has_cap(ARM64_WORKAROUND_1418040))
-		return;
-
-	val = read_sysreg(cntkctl_el1);
-
-	if (!next32)
-		val |= ARCH_TIMER_USR_VCT_ACCESS_EN;
+	if (is_compat_thread(task_thread_info(next)))
+		sysreg_clear_set(cntkctl_el1, ARCH_TIMER_USR_VCT_ACCESS_EN, 0);
 	else
-		val &= ~ARCH_TIMER_USR_VCT_ACCESS_EN;
+		sysreg_clear_set(cntkctl_el1, 0, ARCH_TIMER_USR_VCT_ACCESS_EN);
+}
 
-	write_sysreg(val, cntkctl_el1);
+static void erratum_1418040_new_exec(void)
+{
+	preempt_disable();
+	erratum_1418040_thread_switch(current);
+	preempt_enable();
 }
 
 /*
@@ -542,7 +548,7 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	uao_thread_switch(next);
 	ptrauth_thread_switch(next);
 	ssbs_thread_switch(next);
-	erratum_1418040_thread_switch(prev, next);
+	erratum_1418040_thread_switch(next);
 	scs_overflow_check(next);
 
 	/*
@@ -552,6 +558,8 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	 * call.
 	 */
 	dsb(ish);
+
+	trace_android_vh_is_fpsimd_save(prev, next);
 
 	/* the actual thread switch */
 	last = cpu_switch_to(prev, next);
@@ -602,6 +610,7 @@ void arch_setup_new_exec(void)
 	current->mm->context.flags = is_compat_task() ? MMCF_AARCH32 : 0;
 
 	ptrauth_thread_init_user(current);
+	erratum_1418040_new_exec();
 }
 
 #ifdef CONFIG_ARM64_TAGGED_ADDR_ABI
