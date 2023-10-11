@@ -306,7 +306,7 @@ static void s3c24xx_serial_stop_tx(struct uart_port *port)
 			dma->tx_transfer_addr, dma->tx_size, DMA_TO_DEVICE);
 		async_tx_ack(dma->tx_desc);
 		count = dma->tx_bytes_requested - state.residue;
-		xmit->tail = (xmit->tail + count) & (UART_XMIT_SIZE - 1);
+		xmit->tail = (xmit->tail + count) & (uart_xmit_size - 1);
 		port->icount.tx += count;
 	}
 
@@ -341,7 +341,7 @@ static void s3c24xx_serial_tx_dma_complete(void *args)
 
 	spin_lock_irqsave(&port->lock, flags);
 
-	xmit->tail = (xmit->tail + count) & (UART_XMIT_SIZE - 1);
+	xmit->tail = (xmit->tail + count) & (uart_xmit_size - 1);
 	port->icount.tx += count;
 	ourport->tx_in_progress = 0;
 
@@ -366,8 +366,7 @@ static void enable_tx_dma(struct s3c24xx_uart_port *ourport)
 	/* Enable tx dma mode */
 	ucon = rd_regl(port, S3C2410_UCON);
 	ucon &= ~(S3C64XX_UCON_TXBURST_MASK | S3C64XX_UCON_TXMODE_MASK);
-	ucon |= (dma_get_cache_alignment() >= 16) ?
-		S3C64XX_UCON_TXBURST_16 : S3C64XX_UCON_TXBURST_1;
+	ucon |= S3C64XX_UCON_TXBURST_1;
 	ucon |= S3C64XX_UCON_TXMODE_DMA;
 	wr_regl(port,  S3C2410_UCON, ucon);
 
@@ -448,7 +447,7 @@ static void s3c24xx_serial_start_next_tx(struct s3c24xx_uart_port *ourport)
 	unsigned long count;
 
 	/* Get data size up to the end of buffer */
-	count = CIRC_CNT_TO_END(xmit->head, xmit->tail, UART_XMIT_SIZE);
+	count = CIRC_CNT_TO_END(xmit->head, xmit->tail, uart_xmit_size);
 
 	if (!count) {
 		s3c24xx_serial_stop_tx(port);
@@ -640,7 +639,7 @@ static void enable_rx_dma(struct s3c24xx_uart_port *ourport)
 			S3C64XX_UCON_DMASUS_EN |
 			S3C64XX_UCON_TIMEOUT_EN |
 			S3C64XX_UCON_RXMODE_MASK);
-	ucon |= S3C64XX_UCON_RXBURST_16 |
+	ucon |= S3C64XX_UCON_RXBURST_1 |
 			0xf << S3C64XX_UCON_TIMEOUT_SHIFT |
 			S3C64XX_UCON_EMPTYINT_EN |
 			S3C64XX_UCON_TIMEOUT_EN |
@@ -840,7 +839,7 @@ static irqreturn_t s3c24xx_serial_tx_chars(int irq, void *id)
 
 	spin_lock_irqsave(&port->lock, flags);
 
-	count = CIRC_CNT_TO_END(xmit->head, xmit->tail, UART_XMIT_SIZE);
+	count = CIRC_CNT_TO_END(xmit->head, xmit->tail, uart_xmit_size);
 
 	if (ourport->dma && ourport->dma->tx_chan &&
 	    count >= ourport->min_dma_size) {
@@ -880,7 +879,7 @@ static irqreturn_t s3c24xx_serial_tx_chars(int irq, void *id)
 			break;
 
 		wr_reg(port, S3C2410_UTXH, xmit->buf[xmit->tail]);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
+		xmit->tail = (xmit->tail + 1) & (uart_xmit_size - 1);
 		port->icount.tx++;
 		count--;
 	}
@@ -890,11 +889,8 @@ static irqreturn_t s3c24xx_serial_tx_chars(int irq, void *id)
 		goto out;
 	}
 
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS) {
-		spin_unlock(&port->lock);
+	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
-		spin_lock(&port->lock);
-	}
 
 	if (uart_circ_empty(xmit))
 		s3c24xx_serial_stop_tx(port);
@@ -1054,7 +1050,7 @@ static int s3c24xx_serial_request_dma(struct s3c24xx_uart_port *p)
 
 	/* TX buffer */
 	dma->tx_addr = dma_map_single(p->port.dev, p->port.state->xmit.buf,
-				UART_XMIT_SIZE, DMA_TO_DEVICE);
+				uart_xmit_size, DMA_TO_DEVICE);
 	if (dma_mapping_error(p->port.dev, dma->tx_addr)) {
 		reason = "DMA mapping error for TX buffer";
 		ret = -EIO;
@@ -1094,7 +1090,7 @@ static void s3c24xx_serial_release_dma(struct s3c24xx_uart_port *p)
 	if (dma->tx_chan) {
 		dmaengine_terminate_all(dma->tx_chan);
 		dma_unmap_single(p->port.dev, dma->tx_addr,
-				UART_XMIT_SIZE, DMA_TO_DEVICE);
+				uart_xmit_size, DMA_TO_DEVICE);
 		dma_release_channel(dma->tx_chan);
 		dma->tx_chan = NULL;
 	}
@@ -1409,6 +1405,12 @@ static void s3c24xx_serial_set_termios(struct uart_port *port,
 	 */
 
 	baud = uart_get_baud_rate(port, termios, old, 0, 3000000);
+
+	if (!baud) {
+		dev_err(port->dev, "Invalid baudrate:[%d]\n", baud);
+		return;
+	}
+
 	quot = s3c24xx_serial_getclk(ourport, baud, &clk, &clk_sel);
 	if (baud == 38400 && (port->flags & UPF_SPD_MASK) == UPF_SPD_CUST)
 		quot = port->custom_divisor;
@@ -1433,6 +1435,11 @@ static void s3c24xx_serial_set_termios(struct uart_port *port,
 
 	if (ourport->info->has_divslot) {
 		unsigned int div = ourport->baudclk_rate / baud;
+
+		if (!div) {
+			dev_err(port->dev, "Invalid div:[%d]\n", div);
+			return;
+		}
 
 		if (cfg->has_fracval) {
 			udivslot = (div & 15);

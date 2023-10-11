@@ -21,6 +21,8 @@
 #include <linux/blk-mq.h>
 #include <linux/mount.h>
 #include <linux/dax.h>
+#include <linux/bio.h>
+#include <linux/keyslot-manager.h>
 
 #define DM_MSG_PREFIX "table"
 
@@ -66,10 +68,6 @@ struct dm_table {
 	struct dm_md_mempools *mempools;
 
 	struct list_head target_callbacks;
-
-#ifdef CONFIG_BLK_INLINE_ENCRYPTION
-	struct blk_keyslot_manager *ksm;
-#endif
 };
 
 /*
@@ -232,8 +230,6 @@ static void free_devices(struct list_head *devices, struct mapped_device *md)
 	}
 }
 
-static void dm_table_destroy_keyslot_manager(struct dm_table *t);
-
 void dm_table_destroy(struct dm_table *t)
 {
 	unsigned int i;
@@ -261,8 +257,6 @@ void dm_table_destroy(struct dm_table *t)
 	free_devices(&t->devices, t->md);
 
 	dm_free_md_mempools(t->mempools);
-
-	dm_table_destroy_keyslot_manager(t);
 
 	kfree(t);
 }
@@ -880,8 +874,7 @@ EXPORT_SYMBOL(dm_consume_args);
 static bool __table_type_bio_based(enum dm_queue_mode table_type)
 {
 	return (table_type == DM_TYPE_BIO_BASED ||
-		table_type == DM_TYPE_DAX_BIO_BASED ||
-		table_type == DM_TYPE_NVME_BIO_BASED);
+		table_type == DM_TYPE_DAX_BIO_BASED);
 }
 
 static bool __table_type_request_based(enum dm_queue_mode table_type)
@@ -937,8 +930,6 @@ bool dm_table_supports_dax(struct dm_table *t,
 	return true;
 }
 
-static bool dm_table_does_not_support_partial_completion(struct dm_table *t);
-
 static int device_is_rq_stackable(struct dm_target *ti, struct dm_dev *dev,
 				  sector_t start, sector_t len, void *data)
 {
@@ -968,7 +959,6 @@ static int dm_table_determine_type(struct dm_table *t)
 			goto verify_bio_based;
 		}
 		BUG_ON(t->type == DM_TYPE_DAX_BIO_BASED);
-		BUG_ON(t->type == DM_TYPE_NVME_BIO_BASED);
 		goto verify_rq_based;
 	}
 
@@ -1007,15 +997,6 @@ verify_bio_based:
 		if (dm_table_supports_dax(t, device_not_dax_capable, &page_size) ||
 		    (list_empty(devices) && live_md_type == DM_TYPE_DAX_BIO_BASED)) {
 			t->type = DM_TYPE_DAX_BIO_BASED;
-		} else {
-			/* Check if upgrading to NVMe bio-based is valid or required */
-			tgt = dm_table_get_immutable_target(t);
-			if (tgt && !tgt->max_io_len && dm_table_does_not_support_partial_completion(t)) {
-				t->type = DM_TYPE_NVME_BIO_BASED;
-				goto verify_rq_based; /* must be stacked directly on NVMe (blk-mq) */
-			} else if (list_empty(devices) && live_md_type == DM_TYPE_NVME_BIO_BASED) {
-				t->type = DM_TYPE_NVME_BIO_BASED;
-			}
 		}
 		return 0;
 	}
@@ -1032,8 +1013,7 @@ verify_rq_based:
 	 * (e.g. request completion process for partial completion.)
 	 */
 	if (t->num_targets > 1) {
-		DMERR("%s DM doesn't support multiple targets",
-		      t->type == DM_TYPE_NVME_BIO_BASED ? "nvme bio-based" : "request-based");
+		DMERR("request-based DM doesn't support multiple targets");
 		return -EINVAL;
 	}
 
@@ -1292,287 +1272,6 @@ static int dm_table_register_integrity(struct dm_table *t)
 	return 0;
 }
 
-#ifdef CONFIG_BLK_INLINE_ENCRYPTION
-
-struct dm_keyslot_manager {
-	struct blk_keyslot_manager ksm;
-	struct mapped_device *md;
-};
-
-struct dm_keyslot_evict_args {
-	const struct blk_crypto_key *key;
-	int err;
-};
-
-static int dm_keyslot_evict_callback(struct dm_target *ti, struct dm_dev *dev,
-				     sector_t start, sector_t len, void *data)
-{
-	struct dm_keyslot_evict_args *args = data;
-	int err;
-
-	err = blk_crypto_evict_key(bdev_get_queue(dev->bdev), args->key);
-	if (!args->err)
-		args->err = err;
-	/* Always try to evict the key from all devices. */
-	return 0;
-}
-
-/*
- * When an inline encryption key is evicted from a device-mapper device, evict
- * it from all the underlying devices.
- */
-static int dm_keyslot_evict(struct blk_keyslot_manager *ksm,
-			    const struct blk_crypto_key *key, unsigned int slot)
-{
-	struct dm_keyslot_manager *dksm = container_of(ksm,
-						       struct dm_keyslot_manager,
-						       ksm);
-	struct mapped_device *md = dksm->md;
-	struct dm_keyslot_evict_args args = { key };
-	struct dm_table *t;
-	int srcu_idx;
-	int i;
-	struct dm_target *ti;
-
-	t = dm_get_live_table(md, &srcu_idx);
-	if (!t)
-		return 0;
-	for (i = 0; i < dm_table_get_num_targets(t); i++) {
-		ti = dm_table_get_target(t, i);
-		if (!ti->type->iterate_devices)
-			continue;
-		ti->type->iterate_devices(ti, dm_keyslot_evict_callback, &args);
-	}
-	dm_put_live_table(md, srcu_idx);
-	return args.err;
-}
-
-struct dm_derive_raw_secret_args {
-	const u8 *wrapped_key;
-	unsigned int wrapped_key_size;
-	u8 *secret;
-	unsigned int secret_size;
-	int err;
-};
-
-static int dm_derive_raw_secret_callback(struct dm_target *ti,
-					 struct dm_dev *dev, sector_t start,
-					 sector_t len, void *data)
-{
-	struct dm_derive_raw_secret_args *args = data;
-	struct request_queue *q = bdev_get_queue(dev->bdev);
-
-	if (!args->err)
-		return 0;
-
-	if (!q->ksm) {
-		args->err = -EOPNOTSUPP;
-		return 0;
-	}
-
-	args->err = blk_ksm_derive_raw_secret(q->ksm, args->wrapped_key,
-					      args->wrapped_key_size,
-					      args->secret,
-					      args->secret_size);
-	/* Try another device in case this fails. */
-	return 0;
-}
-
-/*
- * Retrieve the raw_secret from the underlying device.  Given that only one
- * raw_secret can exist for a particular wrappedkey, retrieve it only from the
- * first device that supports derive_raw_secret().
- */
-static int dm_derive_raw_secret(struct blk_keyslot_manager *ksm,
-				const u8 *wrapped_key,
-				unsigned int wrapped_key_size,
-				u8 *secret, unsigned int secret_size)
-{
-	struct dm_keyslot_manager *dksm = container_of(ksm,
-						       struct dm_keyslot_manager,
-						       ksm);
-	struct mapped_device *md = dksm->md;
-	struct dm_derive_raw_secret_args args = {
-		.wrapped_key = wrapped_key,
-		.wrapped_key_size = wrapped_key_size,
-		.secret = secret,
-		.secret_size = secret_size,
-		.err = -EOPNOTSUPP,
-	};
-	struct dm_table *t;
-	int srcu_idx;
-	int i;
-	struct dm_target *ti;
-
-	t = dm_get_live_table(md, &srcu_idx);
-	if (!t)
-		return -EOPNOTSUPP;
-	for (i = 0; i < dm_table_get_num_targets(t); i++) {
-		ti = dm_table_get_target(t, i);
-		if (!ti->type->iterate_devices)
-			continue;
-		ti->type->iterate_devices(ti, dm_derive_raw_secret_callback,
-					  &args);
-		if (!args.err)
-			break;
-	}
-	dm_put_live_table(md, srcu_idx);
-	return args.err;
-}
-
-
-static struct blk_ksm_ll_ops dm_ksm_ll_ops = {
-	.keyslot_evict = dm_keyslot_evict,
-	.derive_raw_secret = dm_derive_raw_secret,
-};
-
-static int device_intersect_crypto_modes(struct dm_target *ti,
-					 struct dm_dev *dev, sector_t start,
-					 sector_t len, void *data)
-{
-	struct blk_keyslot_manager *parent = data;
-	struct blk_keyslot_manager *child = bdev_get_queue(dev->bdev)->ksm;
-
-	blk_ksm_intersect_modes(parent, child);
-	return 0;
-}
-
-void dm_destroy_keyslot_manager(struct blk_keyslot_manager *ksm)
-{
-	struct dm_keyslot_manager *dksm = container_of(ksm,
-						       struct dm_keyslot_manager,
-						       ksm);
-
-	if (!ksm)
-		return;
-
-	blk_ksm_destroy(ksm);
-	kfree(dksm);
-}
-
-static void dm_table_destroy_keyslot_manager(struct dm_table *t)
-{
-	dm_destroy_keyslot_manager(t->ksm);
-	t->ksm = NULL;
-}
-
-/*
- * Constructs and initializes t->ksm with a keyslot manager that
- * represents the common set of crypto capabilities of the devices
- * described by the dm_table. However, if the constructed keyslot
- * manager does not support a superset of the crypto capabilities
- * supported by the current keyslot manager of the mapped_device,
- * it returns an error instead, since we don't support restricting
- * crypto capabilities on table changes. Finally, if the constructed
- * keyslot manager doesn't actually support any crypto modes at all,
- * it just returns NULL.
- */
-static int dm_table_construct_keyslot_manager(struct dm_table *t)
-{
-	struct dm_keyslot_manager *dksm;
-	struct blk_keyslot_manager *ksm;
-	struct dm_target *ti;
-	unsigned int i;
-	bool ksm_is_empty = true;
-
-	dksm = kmalloc(sizeof(*dksm), GFP_KERNEL);
-	if (!dksm)
-		return -ENOMEM;
-	dksm->md = t->md;
-
-	ksm = &dksm->ksm;
-	blk_ksm_init_passthrough(ksm);
-	ksm->ksm_ll_ops = dm_ksm_ll_ops;
-	ksm->max_dun_bytes_supported = UINT_MAX;
-	memset(ksm->crypto_modes_supported, 0xFF,
-	       sizeof(ksm->crypto_modes_supported));
-	ksm->features = BLK_CRYPTO_FEATURE_STANDARD_KEYS |
-			BLK_CRYPTO_FEATURE_WRAPPED_KEYS;
-
-	for (i = 0; i < dm_table_get_num_targets(t); i++) {
-		ti = dm_table_get_target(t, i);
-
-		if (!dm_target_passes_crypto(ti->type)) {
-			blk_ksm_intersect_modes(ksm, NULL);
-			break;
-		}
-		if (!ti->type->iterate_devices)
-			continue;
-		ti->type->iterate_devices(ti, device_intersect_crypto_modes,
-					  ksm);
-	}
-
-	if (t->md->queue && !blk_ksm_is_superset(ksm, t->md->queue->ksm)) {
-		DMWARN("Inline encryption capabilities of new DM table were more restrictive than the old table's. This is not supported!");
-		dm_destroy_keyslot_manager(ksm);
-		return -EINVAL;
-	}
-
-	/*
-	 * If the new KSM doesn't actually support any crypto modes, we may as
-	 * well represent it with a NULL ksm.
-	 */
-	ksm_is_empty = true;
-	for (i = 0; i < ARRAY_SIZE(ksm->crypto_modes_supported); i++) {
-		if (ksm->crypto_modes_supported[i]) {
-			ksm_is_empty = false;
-			break;
-		}
-	}
-
-	if (ksm_is_empty) {
-		dm_destroy_keyslot_manager(ksm);
-		ksm = NULL;
-	}
-
-	/*
-	 * t->ksm is only set temporarily while the table is being set
-	 * up, and it gets set to NULL after the capabilities have
-	 * been transferred to the request_queue.
-	 */
-	t->ksm = ksm;
-
-	return 0;
-}
-
-static void dm_update_keyslot_manager(struct request_queue *q,
-				      struct dm_table *t)
-{
-	if (!t->ksm)
-		return;
-
-	/* Make the ksm less restrictive */
-	if (!q->ksm) {
-		blk_ksm_register(t->ksm, q);
-	} else {
-		blk_ksm_update_capabilities(q->ksm, t->ksm);
-		dm_destroy_keyslot_manager(t->ksm);
-	}
-	t->ksm = NULL;
-}
-
-#else /* CONFIG_BLK_INLINE_ENCRYPTION */
-
-static int dm_table_construct_keyslot_manager(struct dm_table *t)
-{
-	return 0;
-}
-
-void dm_destroy_keyslot_manager(struct blk_keyslot_manager *ksm)
-{
-}
-
-static void dm_table_destroy_keyslot_manager(struct dm_table *t)
-{
-}
-
-static void dm_update_keyslot_manager(struct request_queue *q,
-				      struct dm_table *t)
-{
-}
-
-#endif /* !CONFIG_BLK_INLINE_ENCRYPTION */
-
 /*
  * Prepares the table for use by building the indices,
  * setting the type, and allocating mempools.
@@ -1596,12 +1295,6 @@ int dm_table_complete(struct dm_table *t)
 	r = dm_table_register_integrity(t);
 	if (r) {
 		DMERR("could not register integrity profile.");
-		return r;
-	}
-
-	r = dm_table_construct_keyslot_manager(t);
-	if (r) {
-		DMERR("could not construct keyslot manager.");
 		return r;
 	}
 
@@ -1942,6 +1635,54 @@ static void dm_table_verify_integrity(struct dm_table *t)
 	}
 }
 
+#ifdef CONFIG_BLK_INLINE_ENCRYPTION
+static int device_intersect_crypto_modes(struct dm_target *ti,
+					 struct dm_dev *dev, sector_t start,
+					 sector_t len, void *data)
+{
+	struct keyslot_manager *parent = data;
+	struct keyslot_manager *child = bdev_get_queue(dev->bdev)->ksm;
+
+	keyslot_manager_intersect_modes(parent, child);
+	return 0;
+}
+
+/*
+ * Update the inline crypto modes supported by 'q->ksm' to be the intersection
+ * of the modes supported by all targets in the table.
+ *
+ * For any mode to be supported at all, all targets must have explicitly
+ * declared that they can pass through inline crypto support.  For a particular
+ * mode to be supported, all underlying devices must also support it.
+ *
+ * Assume that 'q->ksm' initially declares all modes to be supported.
+ */
+static void dm_calculate_supported_crypto_modes(struct dm_table *t,
+						struct request_queue *q)
+{
+	struct dm_target *ti;
+	unsigned int i;
+
+	for (i = 0; i < dm_table_get_num_targets(t); i++) {
+		ti = dm_table_get_target(t, i);
+
+		if (!ti->may_passthrough_inline_crypto) {
+			keyslot_manager_intersect_modes(q->ksm, NULL);
+			return;
+		}
+		if (!ti->type->iterate_devices)
+			continue;
+		ti->type->iterate_devices(ti, device_intersect_crypto_modes,
+					  q->ksm);
+	}
+}
+#else /* CONFIG_BLK_INLINE_ENCRYPTION */
+static inline void dm_calculate_supported_crypto_modes(struct dm_table *t,
+						       struct request_queue *q)
+{
+}
+#endif /* !CONFIG_BLK_INLINE_ENCRYPTION */
+
 static int device_flush_capable(struct dm_target *ti, struct dm_dev *dev,
 				sector_t start, sector_t len, void *data)
 {
@@ -2007,20 +1748,6 @@ static int device_is_not_random(struct dm_target *ti, struct dm_dev *dev,
 	struct request_queue *q = bdev_get_queue(dev->bdev);
 
 	return q && !blk_queue_add_random(q);
-}
-
-static int device_is_partial_completion(struct dm_target *ti, struct dm_dev *dev,
-					sector_t start, sector_t len, void *data)
-{
-	char b[BDEVNAME_SIZE];
-
-	/* For now, NVMe devices are the only devices of this class */
-	return (strncmp(bdevname(dev->bdev, b), "nvme", 4) != 0);
-}
-
-static bool dm_table_does_not_support_partial_completion(struct dm_table *t)
-{
-	return !dm_table_any_dev_attr(t, device_is_partial_completion, NULL);
 }
 
 static int device_not_write_same_capable(struct dm_target *ti, struct dm_dev *dev,
@@ -2203,6 +1930,8 @@ void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,
 
 	dm_table_verify_integrity(t);
 
+	dm_calculate_supported_crypto_modes(t, q);
+
 	/*
 	 * Some devices don't use blk_integrity but still want stable pages
 	 * because they do their own checksumming.
@@ -2236,8 +1965,6 @@ void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,
 		q->nr_zones = blkdev_nr_zones(t->md->disk);
 	}
 #endif
-
-	dm_update_keyslot_manager(q, t);
 
 	/* Allow reads to exceed readahead limits */
 	q->backing_dev_info->io_pages = limits->max_sectors >> (PAGE_SHIFT - 9);
