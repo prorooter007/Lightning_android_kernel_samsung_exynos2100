@@ -1,0 +1,802 @@
+From 77a69a4e81c6966632ab604ecd93adfa721852ec Mon Sep 17 00:00:00 2001
+From: Jesse Chan <jc@lineageos.org>
+Date: Sat, 21 Apr 2018 00:08:51 -0700
+Subject: [PATCH 01/10] drivers: battery_v2: sec_battery: export
+ {CURRENT/VOLTAGE}_MAX to sysfs
+
+Inform the system if we are charging normal, fast or rapidly. It will be
+displayed in the locksreen.
+
+Change-Id: Id0de196e02bd5393cb4fb90835f18caa1d2fe20d
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ drivers/battery/common/sec_battery.c | 31 ++++++++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/battery/common/sec_battery.c b/drivers/battery/common/sec_battery.c
+index 82cf23114c274..acad2af1b39fd 100644
+--- a/drivers/battery/common/sec_battery.c
++++ b/drivers/battery/common/sec_battery.c
+@@ -5180,9 +5180,20 @@ static int sec_usb_get_property(struct power_supply *psy,
+ {
+ 	struct sec_battery_info *battery = power_supply_get_drvdata(psy);
+ 
+-	if (psp != POWER_SUPPLY_PROP_ONLINE)
++	switch (psp) {
++	case POWER_SUPPLY_PROP_ONLINE:
++		break;
++	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
++		/* V -> uV */
++		val->intval = battery->input_voltage * 1000000;
++		return 0;
++	case POWER_SUPPLY_PROP_CURRENT_MAX:
++		/* mA -> uA */
++		val->intval = battery->pdata->charging_current[battery->cable_type].input_current_limit * 1000;
++		return 0;
++	default:
+ 		return -EINVAL;
+-
++	}
+ 	if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
+ 		(battery->health == POWER_SUPPLY_EXT_HEALTH_UNDERVOLTAGE)) {
+ 		val->intval = 0;
+@@ -5259,6 +5270,14 @@ static int sec_ac_get_property(struct power_supply *psy,
+ 	case POWER_SUPPLY_PROP_TEMP:
+ 		val->intval = battery->chg_temp;
+ 		break;
++	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
++		/* V -> uV */
++		val->intval = battery->input_voltage * 1000000;
++		return 0;
++	case POWER_SUPPLY_PROP_CURRENT_MAX:
++		/* mA -> uA */
++		val->intval = battery->pdata->charging_current[battery->cable_type].input_current_limit * 1000;
++		return 0;
+ 	case POWER_SUPPLY_EXT_PROP_MIN ... POWER_SUPPLY_EXT_PROP_MAX:
+ 		switch (ext_psp) {
+ 			case POWER_SUPPLY_EXT_PROP_WATER_DETECT:
+@@ -5315,6 +5334,14 @@ static int sec_wireless_get_property(struct power_supply *psy,
+ 			return -EINVAL;
+ 		}
+ 		break;
++	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
++		/* V -> uV */
++		val->intval = battery->input_voltage * 1000000;
++		return 0;
++	case POWER_SUPPLY_PROP_CURRENT_MAX:
++		/* mA -> uA */
++		val->intval = battery->pdata->charging_current[battery->cable_type].input_current_limit * 1000;
++		return 0;
+ 	default:
+ 		return -EINVAL;
+ 	}
+-- 
+2.39.0
+
+
+From fa0dd68278ec8bdcf6ca2a814a844cb6b161cc17 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@cryptomilk.org>
+Date: Mon, 18 Jan 2021 13:35:11 +0100
+Subject: [PATCH 02/10] drivers: battery_v2: sec_battery: fix multiplication
+ factor for input voltage
+
+Change-Id: I3c8ac04bc7f4bd8be7d6e6447388b6fb59e045fe
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ drivers/battery/common/sec_battery.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/battery/common/sec_battery.c b/drivers/battery/common/sec_battery.c
+index acad2af1b39fd..024278834e536 100644
+--- a/drivers/battery/common/sec_battery.c
++++ b/drivers/battery/common/sec_battery.c
+@@ -5185,7 +5185,7 @@ static int sec_usb_get_property(struct power_supply *psy,
+ 		break;
+ 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+ 		/* V -> uV */
+-		val->intval = battery->input_voltage * 1000000;
++		val->intval = battery->input_voltage * 100000;
+ 		return 0;
+ 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+ 		/* mA -> uA */
+@@ -5272,7 +5272,7 @@ static int sec_ac_get_property(struct power_supply *psy,
+ 		break;
+ 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+ 		/* V -> uV */
+-		val->intval = battery->input_voltage * 1000000;
++		val->intval = battery->input_voltage * 100000;
+ 		return 0;
+ 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+ 		/* mA -> uA */
+@@ -5336,7 +5336,7 @@ static int sec_wireless_get_property(struct power_supply *psy,
+ 		break;
+ 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+ 		/* V -> uV */
+-		val->intval = battery->input_voltage * 1000000;
++		val->intval = battery->input_voltage * 100000;
+ 		return 0;
+ 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+ 		/* mA -> uA */
+-- 
+2.39.0
+
+
+From 1a58f0f5c8ba16882a14d412a829d7e79b0b1c25 Mon Sep 17 00:00:00 2001
+From: Jesse Chan <jc@lineageos.org>
+Date: Sat, 20 May 2017 09:22:35 +0800
+Subject: [PATCH 03/10] drivers: vibrator: sec_vibrator: use AOSP-friendly
+ interface
+
+Signed-off-by: Francescodario Cuzzocrea <bosconovic@gmail.com>
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ drivers/vibrator/common/sec_vibrator.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/vibrator/common/sec_vibrator.c b/drivers/vibrator/common/sec_vibrator.c
+index dfea0ad3febd4..ee56d7dd9ea5d 100644
+--- a/drivers/vibrator/common/sec_vibrator.c
++++ b/drivers/vibrator/common/sec_vibrator.c
+@@ -476,7 +476,7 @@ __visible_for_testing ssize_t intensity_show(struct device *dev, struct device_a
+ 
+ 	if (!is_valid_params(dev, attr, buf, ddata))
+ 		return -ENODATA;
+-	return snprintf(buf, VIB_BUFSIZE, "intensity: %u\n", ddata->intensity);
++	return snprintf(buf, VIB_BUFSIZE, "%u\n", ddata->intensity);
+ }
+ 
+ __visible_for_testing ssize_t multi_freq_store(struct device *dev, struct device_attribute *attr,
+-- 
+2.39.0
+
+
+From ea272d9900ccee79d5cecbf03f3f4658cc8b12d6 Mon Sep 17 00:00:00 2001
+From: Tim Zimmermann <tim@linux4.de>
+Date: Mon, 23 Nov 2020 08:47:19 +0100
+Subject: [PATCH 04/10] drivers: net: wireless: broadcom: rename AP interface
+ from swlan0 to wlan0
+
+* needed to get sta/ap concurrency working
+* see https://source.android.com/devices/tech/connect/wifi-sta-ap-concurrency?hl=en
+
+Change-Id: I0d3c6ac7e55d86d4fa460fa92c893702e2f6a53f
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ drivers/net/wireless/broadcom/bcmdhd_101_10/Makefile      | 4 ++--
+ drivers/net/wireless/broadcom/bcmdhd_101_10/wl_cfg80211.c | 2 +-
+ drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile      | 6 +++---
+ drivers/net/wireless/broadcom/bcmdhd_101_16/wl_cfg80211.c | 2 +-
+ drivers/net/wireless/broadcom/bcmdhd_101_18/Makefile      | 4 ++--
+ drivers/net/wireless/broadcom/bcmdhd_101_18/wl_cfg80211.c | 2 +-
+ 6 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/bcmdhd_101_10/Makefile b/drivers/net/wireless/broadcom/bcmdhd_101_10/Makefile
+index 241272255a060..1ece5d6030e0c 100644
+--- a/drivers/net/wireless/broadcom/bcmdhd_101_10/Makefile
++++ b/drivers/net/wireless/broadcom/bcmdhd_101_10/Makefile
+@@ -498,7 +498,7 @@ ifneq ($(CONFIG_CFG80211_SCANTYPE_BKPORT),)
+ endif
+ 
+   DHDCFLAGS += -DWL_STATIC_IF
+-  DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"swlan0\""
++  DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"wlan1\""
+ #OWE
+   DHDCFLAGS += -DWL_OWE
+ #SAE-FT
+@@ -785,7 +785,7 @@ ifneq ($(filter y m,$(CONFIG_BCM4375)),)
+   DHDCFLAGS += -DWL_SAE
+  endif
+  DHDCFLAGS += -DWL_STATIC_IF
+- DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"swlan0\""
++ DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"wlan1\""
+  #OWE
+  DHDCFLAGS += -DWL_OWE
+  # Disable HE on P2P
+diff --git a/drivers/net/wireless/broadcom/bcmdhd_101_10/wl_cfg80211.c b/drivers/net/wireless/broadcom/bcmdhd_101_10/wl_cfg80211.c
+index 4e5cc2890f6e9..6e88d9004b6b7 100644
+--- a/drivers/net/wireless/broadcom/bcmdhd_101_10/wl_cfg80211.c
++++ b/drivers/net/wireless/broadcom/bcmdhd_101_10/wl_cfg80211.c
+@@ -1254,7 +1254,7 @@ static const rsn_akm_wpa_auth_entry_t rsn_akm_wpa_auth_lookup_tbl[] = {
+ #define _S(x) #x
+ #define S(x) _S(x)
+ 
+-#define SOFT_AP_IF_NAME         "swlan0"
++#define SOFT_AP_IF_NAME         "wlan1"
+ 
+ /* watchdog timer for disconnecting when fw is not associated for FW_ASSOC_WATCHDOG_TIME ms */
+ uint32 fw_assoc_watchdog_ms = 0;
+diff --git a/drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile b/drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile
+index 8eba343dde170..7e52ef0d5cba7 100644
+--- a/drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile
++++ b/drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile
+@@ -503,7 +503,7 @@ ifneq ($(CONFIG_CFG80211_SCANTYPE_BKPORT),)
+ endif
+ 
+   DHDCFLAGS += -DWL_STATIC_IF
+-  DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"swlan0\""
++  DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"wlan1\""
+ #OWE
+   DHDCFLAGS += -DWL_OWE
+ # Disable HE on P2P based on peer support
+@@ -789,7 +789,7 @@ ifneq ($(filter y m,$(CONFIG_BCM4375)),)
+   DHDCFLAGS += -DWL_SAE
+  endif
+  DHDCFLAGS += -DWL_STATIC_IF
+- DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"swlan0\""
++ DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"wlan1\""
+  #OWE
+  DHDCFLAGS += -DWL_OWE
+ # Disable HE on P2P and SoftAP
+@@ -1078,7 +1078,7 @@ ifneq ($(CONFIG_BCM4361),)
+ DHDCFLAGS += -DWL_MBO
+ DHDCFLAGS += -DWL_OCE
+ DHDCFLAGS += -DWL_STATIC_IF
+-DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"swlan0\""
++DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"wlan1\""
+ ifneq ($(CONFIG_CFG80211_FILS_BKPORT),)
+ #if kernel < 4.12, FILS patches need to be backported
+ DHDCFLAGS += -DWL_FILS
+diff --git a/drivers/net/wireless/broadcom/bcmdhd_101_16/wl_cfg80211.c b/drivers/net/wireless/broadcom/bcmdhd_101_16/wl_cfg80211.c
+index e8c54d629cd38..9aa7ff16d5bee 100644
+--- a/drivers/net/wireless/broadcom/bcmdhd_101_16/wl_cfg80211.c
++++ b/drivers/net/wireless/broadcom/bcmdhd_101_16/wl_cfg80211.c
+@@ -1246,7 +1246,7 @@ static const rsn_akm_wpa_auth_entry_t rsn_akm_wpa_auth_lookup_tbl[] = {
+ #define _S(x) #x
+ #define S(x) _S(x)
+ 
+-#define SOFT_AP_IF_NAME         "swlan0"
++#define SOFT_AP_IF_NAME         "wlan1"
+ 
+ /* watchdog timer for disconnecting when fw is not associated for FW_ASSOC_WATCHDOG_TIME ms */
+ uint32 fw_assoc_watchdog_ms = 0;
+diff --git a/drivers/net/wireless/broadcom/bcmdhd_101_18/Makefile b/drivers/net/wireless/broadcom/bcmdhd_101_18/Makefile
+index 91657a2737c3c..5ee1f8c218c61 100644
+--- a/drivers/net/wireless/broadcom/bcmdhd_101_18/Makefile
++++ b/drivers/net/wireless/broadcom/bcmdhd_101_18/Makefile
+@@ -516,7 +516,7 @@ ifneq ($(CONFIG_CFG80211_SCANTYPE_BKPORT),)
+ endif
+ 
+   DHDCFLAGS += -DWL_STATIC_IF
+-  DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"swlan0\""
++  DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"wlan1\""
+ #OWE
+   DHDCFLAGS += -DWL_OWE
+ #SAE-FT
+@@ -821,7 +821,7 @@ ifneq ($(filter y m,$(CONFIG_BCM4375)),)
+   DHDCFLAGS += -DWL_SAE
+  endif
+  DHDCFLAGS += -DWL_STATIC_IF
+- DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"swlan0\""
++ DHDCFLAGS += -DWL_STATIC_IFNAME_PREFIX="\"wlan1\""
+  #OWE
+  DHDCFLAGS += -DWL_OWE
+  # Disable HE on P2P
+diff --git a/drivers/net/wireless/broadcom/bcmdhd_101_18/wl_cfg80211.c b/drivers/net/wireless/broadcom/bcmdhd_101_18/wl_cfg80211.c
+index e2a6912e3005c..87b69a9177531 100644
+--- a/drivers/net/wireless/broadcom/bcmdhd_101_18/wl_cfg80211.c
++++ b/drivers/net/wireless/broadcom/bcmdhd_101_18/wl_cfg80211.c
+@@ -1271,7 +1271,7 @@ static const rsn_akm_wpa_auth_entry_t rsn_akm_wpa_auth_lookup_tbl[] = {
+ #define _S(x) #x
+ #define S(x) _S(x)
+ 
+-#define SOFT_AP_IF_NAME         "swlan0"
++#define SOFT_AP_IF_NAME         "wlan1"
+ 
+ /* watchdog timer for disconnecting when fw is not associated for FW_ASSOC_WATCHDOG_TIME ms */
+ uint32 fw_assoc_watchdog_ms = 0;
+-- 
+2.39.0
+
+
+From ac7cd3cb8467f91c0cb64ceb448ffbd025610211 Mon Sep 17 00:00:00 2001
+From: Tim Zimmermann <tim@linux4.de>
+Date: Sat, 15 May 2021 11:16:27 +0200
+Subject: [PATCH 05/10] drivers: net: wireless: broadcom: enable p2p mac
+ randomization support
+
+Change-Id: Ie7103ad2da7c080a4dff7c9d040b7c7fe6d08509
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile b/drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile
+index 7e52ef0d5cba7..036a43b342fac 100644
+--- a/drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile
++++ b/drivers/net/wireless/broadcom/bcmdhd_101_16/Makefile
+@@ -418,7 +418,7 @@ DHDCFLAGS += -DWL_STA_ASSOC_RAND
+ #Soft AP MAC randomization
+ DHDCFLAGS += -DWL_SOFTAP_RAND
+ #p2p MAC randomization
+-#DHDCFLAGS += -DWL_P2P_RAND
++DHDCFLAGS += -DWL_P2P_RAND
+ 
+ # Set initial country code to World Wide Safe
+ DHDCFLAGS += -DCUSTOM_COUNTRY_CODE_XZ
+-- 
+2.39.0
+
+
+From b0048eb08362eb19b077a4883a5d087691198b0b Mon Sep 17 00:00:00 2001
+From: LuK1337 <priv.luk@gmail.com>
+Date: Sat, 19 Sep 2020 19:57:55 +0200
+Subject: [PATCH 06/10] ext4: Add no_sehash_xattr mount option
+
+* Useful for devices where /persist may have unexpected SELinux
+  contexts but xattr of root directory is valid, leading to
+  restorecon early exitting without traversing the partition.
+
+Change-Id: I5089ff90f76aa9f3db7da26f73548cf62fe67bd0
+(cherry picked from commit 8c6c40aa2ce13b83bcc137424e99be5e39d5245d)
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ fs/ext4/ext4.h           |  1 +
+ fs/ext4/super.c          |  4 +++-
+ fs/ext4/xattr_security.c | 10 ++++++++--
+ 3 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/fs/ext4/ext4.h b/fs/ext4/ext4.h
+index a9adbf7e79cb4..23bad7b7e0b62 100644
+--- a/fs/ext4/ext4.h
++++ b/fs/ext4/ext4.h
+@@ -1137,6 +1137,7 @@ struct ext4_inode_info {
+ #define EXT4_MOUNT_NO_AUTO_DA_ALLOC	0x10000	/* No auto delalloc mapping */
+ #define EXT4_MOUNT_BARRIER		0x20000 /* Use block barriers */
+ #define EXT4_MOUNT_QUOTA		0x40000 /* Some quota option set */
++#define EXT4_MOUNT_NO_SEHASH_XATTR	0x40000 /* Ignore security.sehash extended attribute */
+ #define EXT4_MOUNT_USRQUOTA		0x80000 /* "old" user quota,
+ 						 * enable enforcement for hidden
+ 						 * quota files */
+diff --git a/fs/ext4/super.c b/fs/ext4/super.c
+index 6dd69a58ae3e2..dd4b6703d376f 100644
+--- a/fs/ext4/super.c
++++ b/fs/ext4/super.c
+@@ -1569,7 +1569,7 @@ enum {
+ 	Opt_bsd_df, Opt_minix_df, Opt_grpid, Opt_nogrpid,
+ 	Opt_resgid, Opt_resuid, Opt_sb, Opt_err_cont, Opt_err_panic, Opt_err_ro,
+ 	Opt_nouid32, Opt_debug, Opt_removed,
+-	Opt_user_xattr, Opt_nouser_xattr, Opt_acl, Opt_noacl,
++	Opt_user_xattr, Opt_nouser_xattr, Opt_no_sehash_xattr, Opt_acl, Opt_noacl,
+ 	Opt_auto_da_alloc, Opt_noauto_da_alloc, Opt_noload,
+ 	Opt_commit, Opt_min_batch_time, Opt_max_batch_time, Opt_journal_dev,
+ 	Opt_journal_path, Opt_journal_checksum, Opt_journal_async_commit,
+@@ -1609,6 +1609,7 @@ static const match_table_t tokens = {
+ 	{Opt_removed, "orlov"},
+ 	{Opt_user_xattr, "user_xattr"},
+ 	{Opt_nouser_xattr, "nouser_xattr"},
++	{Opt_no_sehash_xattr, "no_sehash_xattr"},
+ 	{Opt_acl, "acl"},
+ 	{Opt_noacl, "noacl"},
+ 	{Opt_noload, "norecovery"},
+@@ -1856,6 +1857,7 @@ static const struct mount_opts {
+ 	 MOPT_NO_EXT2 | MOPT_DATAJ},
+ 	{Opt_user_xattr, EXT4_MOUNT_XATTR_USER, MOPT_SET},
+ 	{Opt_nouser_xattr, EXT4_MOUNT_XATTR_USER, MOPT_CLEAR},
++	{Opt_no_sehash_xattr, EXT4_MOUNT_NO_SEHASH_XATTR, MOPT_SET},
+ #ifdef CONFIG_EXT4_FS_POSIX_ACL
+ 	{Opt_acl, EXT4_MOUNT_POSIX_ACL, MOPT_SET},
+ 	{Opt_noacl, EXT4_MOUNT_POSIX_ACL, MOPT_CLEAR},
+diff --git a/fs/ext4/xattr_security.c b/fs/ext4/xattr_security.c
+index 50fb71393fb64..2c29ad5b59aac 100644
+--- a/fs/ext4/xattr_security.c
++++ b/fs/ext4/xattr_security.c
+@@ -14,19 +14,25 @@
+ 
+ static int
+ ext4_xattr_security_get(const struct xattr_handler *handler,
+-			struct dentry *unused, struct inode *inode,
++			struct dentry *dentry, struct inode *inode,
+ 			const char *name, void *buffer, size_t size, int flags)
+ {
++
++	if (strcmp(name, "sehash") == 0 && test_opt(dentry->d_sb, NO_SEHASH_XATTR))
++		return 0;
+ 	return ext4_xattr_get(inode, EXT4_XATTR_INDEX_SECURITY,
+ 			      name, buffer, size);
+ }
+ 
+ static int
+ ext4_xattr_security_set(const struct xattr_handler *handler,
+-			struct dentry *unused, struct inode *inode,
++			struct dentry *dentry, struct inode *inode,
+ 			const char *name, const void *value,
+ 			size_t size, int flags)
+ {
++
++	if (strcmp(name, "sehash") == 0 && test_opt(dentry->d_sb, NO_SEHASH_XATTR))
++		return 0;
+ 	return ext4_xattr_set(inode, EXT4_XATTR_INDEX_SECURITY,
+ 			      name, value, size, flags);
+ }
+-- 
+2.39.0
+
+
+From 8a2994076c2c279ade912ad4638ad29076f81c2b Mon Sep 17 00:00:00 2001
+From: Luca Grifo <luca@grifodev.ch>
+Date: Thu, 30 Jul 2020 20:30:09 +0300
+Subject: [PATCH 07/10] selinux: remove debug and enforce flag
+
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ security/selinux/Makefile | 12 ------------
+ 1 file changed, 12 deletions(-)
+
+diff --git a/security/selinux/Makefile b/security/selinux/Makefile
+index 74f730f7454c6..747886767ec24 100644
+--- a/security/selinux/Makefile
++++ b/security/selinux/Makefile
+@@ -3,19 +3,7 @@
+ # Makefile for building the SELinux module as part of the kernel tree.
+ #
+ 
+-# [ SEC_SELINUX_PORTING_COMMON
+ ccflags-y := -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
+-	
+-ifeq ($(SEC_BUILD_OPTION_VTS),false)
+-ifeq ($(TARGET_BUILD_VARIANT), user)
+-ifeq ($(SEC_BUILD_OPTION_PRODUCT_SHIP), true)
+-ifeq ($(SEC_BUILD_OPTION_SELINUX_ENFORCE),true)
+-    ccflags-y += -DCONFIG_ALWAYS_ENFORCE=true
+-endif
+-endif
+-endif
+-endif
+-# ] SEC_SELINUX_PORTING_COMMON
+ 
+ obj-$(CONFIG_SECURITY_SELINUX) := selinux.o
+ 
+-- 
+2.39.0
+
+
+From 88501311f37da6806e88d7d85f5f56f904d8823e Mon Sep 17 00:00:00 2001
+From: BlackMesa123 <brother12@hotmail.it>
+Date: Thu, 30 Jul 2020 20:59:22 +0300
+Subject: [PATCH 08/10] selinux: togglable selinux status
+
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ security/selinux/Kconfig            | 14 ++++++++++++
+ security/selinux/hooks.c            | 13 ++++++++----
+ security/selinux/include/security.h |  2 +-
+ security/selinux/netif.c            |  2 +-
+ security/selinux/netnode.c          |  2 +-
+ security/selinux/netport.c          |  2 +-
+ security/selinux/selinuxfs.c        | 33 ++++++++++++++++++++++-------
+ security/selinux/ss/policydb.c      |  8 +++----
+ security/selinux/ss/services.c      | 12 ++++++++---
+ security/selinux/ss/status.c        |  4 +++-
+ 10 files changed, 68 insertions(+), 24 deletions(-)
+
+diff --git a/security/selinux/Kconfig b/security/selinux/Kconfig
+index c9e576c430c21..fa5b0ba959597 100644
+--- a/security/selinux/Kconfig
++++ b/security/selinux/Kconfig
+@@ -57,6 +57,20 @@ config SECURITY_SELINUX_DEVELOP
+ 	  can interactively toggle the kernel between enforcing mode and
+ 	  permissive mode (if permitted by the policy) via /selinux/enforce.
+ 
++config SECURITY_SELINUX_ALWAYS_ENFORCE
++	bool "NSA SELinux Always Enforcing"
++	depends on SECURITY_SELINUX_DEVELOP
++	default n
++	help
++	  This option will prevent anything from setting SELinux to permissive.
++
++config SECURITY_SELINUX_ALWAYS_PERMISSIVE
++	bool "NSA SELinux Always Permissive"
++	depends on SECURITY_SELINUX_DEVELOP
++	default n
++	help
++	  This option will prevent anything from setting SELinux to enforcing.
++
+ config SECURITY_SELINUX_AVC_STATS
+ 	bool "NSA SELinux AVC Statistics"
+ 	depends on SECURITY_SELINUX
+diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
+index 1192695280279..2c87400e803c3 100644
+--- a/security/selinux/hooks.c
++++ b/security/selinux/hooks.c
+@@ -121,9 +121,12 @@ static int __init enforcing_setup(char *str)
+ 	unsigned long enforcing;
+ 	if (!kstrtoul(str, 0, &enforcing)) {
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 		selinux_enforcing_boot = 1;
+ 		selinux_enforcing = 1;
++#elif defined(CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE)
++		selinux_enforcing_boot = 0;
++		selinux_enforcing = 0;
+ #else
+ 		selinux_enforcing_boot = enforcing ? 1 : 0;
+ 		selinux_enforcing = enforcing ? 1 : 0;
+@@ -145,7 +148,7 @@ static int __init selinux_enabled_setup(char *str)
+ 	if (!kstrtoul(str, 0, &enabled))
+ 	{
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 		selinux_enabled = 1;
+ #else
+ 		selinux_enabled = enabled ? 1 : 0;
+@@ -7232,8 +7235,10 @@ static __init int selinux_init(void)
+ 		panic("SELinux: Unable to register AVC LSM notifier callback\n");
+ 
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	selinux_enforcing_boot = 1;
++#elif defined(CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE)
++	selinux_enforcing_boot = 0;
+ #endif
+ // ] SEC_SELINUX_PORTING_COMMON
+ 	
+@@ -7335,7 +7340,7 @@ static int __init selinux_nf_ip_init(void)
+ {
+ 	int err;
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	selinux_enabled = 1;
+ #endif
+ // ] SEC_SELINUX_PORTING_COMMON
+diff --git a/security/selinux/include/security.h b/security/selinux/include/security.h
+index 00d18eda65a8b..d9ae895c3c092 100644
+--- a/security/selinux/include/security.h
++++ b/security/selinux/include/security.h
+@@ -239,7 +239,7 @@ struct extended_perms {
+ 
+ /* definitions of av_decision.flags */
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ #define AVD_FLAGS_PERMISSIVE	0x0000
+ #else
+ #define AVD_FLAGS_PERMISSIVE	0x0001
+diff --git a/security/selinux/netif.c b/security/selinux/netif.c
+index 0cd6afb923b93..e0cc496484c06 100644
+--- a/security/selinux/netif.c
++++ b/security/selinux/netif.c
+@@ -267,7 +267,7 @@ static __init int sel_netif_init(void)
+ 	int i;
+ 
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	selinux_enabled = 1;
+ #endif
+ // ] SEC_SELINUX_PORTING_COMMON
+diff --git a/security/selinux/netnode.c b/security/selinux/netnode.c
+index 2ec2e1a17c922..37a1d434ce570 100644
+--- a/security/selinux/netnode.c
++++ b/security/selinux/netnode.c
+@@ -292,7 +292,7 @@ static __init int sel_netnode_init(void)
+ 	int iter;
+ 
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	selinux_enabled = 1;
+ #endif
+ // ] SEC_SELINUX_PORTING_COMMON
+diff --git a/security/selinux/netport.c b/security/selinux/netport.c
+index 711e3d63611bc..652042c1c27c0 100644
+--- a/security/selinux/netport.c
++++ b/security/selinux/netport.c
+@@ -226,7 +226,7 @@ static __init int sel_netport_init(void)
+ 	int iter;
+ 
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	selinux_enabled = 1;
+ #endif
+ // ] SEC_SELINUX_PORTING_COMMON
+diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
+index 1c472fbde5830..2e5c0c5df7970 100644
+--- a/security/selinux/selinuxfs.c
++++ b/security/selinux/selinuxfs.c
+@@ -161,13 +161,13 @@ static ssize_t sel_write_enforce(struct file *file, const char __user *buf,
+ 	old_value = enforcing_enabled(state);
+ 
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
+-	// If build is user build and enforce option is set, selinux is always enforcing
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
++	// If always enforce option is set, selinux is always enforcing
+ 	new_value = 1;
+-    length = avc_has_perm(&selinux_state,
+-				      current_sid(), SECINITSID_SECURITY,
+-				      SECCLASS_SECURITY, SECURITY__SETENFORCE,
+-				      NULL);
++	length = avc_has_perm(&selinux_state,
++				current_sid(), SECINITSID_SECURITY,
++				SECCLASS_SECURITY, SECURITY__SETENFORCE,
++				NULL);
+ 	audit_log(audit_context(), GFP_KERNEL, AUDIT_MAC_STATUS,
+ 			"enforcing=%d old_enforcing=%d auid=%u ses=%u"
+ 			" enabled=%d old-enabled=%d lsm=selinux res=1",
+@@ -175,10 +175,27 @@ static ssize_t sel_write_enforce(struct file *file, const char __user *buf,
+ 			from_kuid(&init_user_ns, audit_get_loginuid(current)),
+ 			audit_get_sessionid(current),
+ 			selinux_enabled, selinux_enabled);
+-    enforcing_set(state, new_value);
++	enforcing_set(state, new_value);
+ 	avc_ss_reset(state->avc, 0);
+ 	selnl_notify_setenforce(new_value);
+ 	selinux_status_update_setenforce(state, new_value);
++#elif defined(CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE)
++	// If always permissive option is set, selinux is always permissive
++	new_value = 0;
++	length = avc_has_perm(&selinux_state,
++				current_sid(), SECINITSID_SECURITY,
++				SECCLASS_SECURITY, SECURITY__SETENFORCE,
++				NULL);
++	audit_log(audit_context(), GFP_KERNEL, AUDIT_MAC_STATUS,
++			"enforcing=%d old_enforcing=%d auid=%u ses=%u"
++			" enabled=%d old-enabled=%d lsm=selinux res=1",
++			new_value, selinux_enforcing,
++			from_kuid(&init_user_ns, audit_get_loginuid(current)),
++			audit_get_sessionid(current),
++			selinux_enabled, selinux_enabled);
++	enforcing_set(state, new_value);
++	selnl_notify_setenforce(new_value);
++	selinux_status_update_setenforce(state, new_value);
+ #else
+ 	if (new_value != selinux_enforcing) { // SEC_SELINUX_PORTING_COMMON Change to use RKP
+ 		length = avc_has_perm(&selinux_state,
+@@ -2133,7 +2150,7 @@ static int __init init_sel_fs(void)
+ 					  sizeof(NULL_FILE_NAME)-1);
+ 	int err;
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	selinux_enabled = 1;
+ #endif
+ // ] SEC_SELINUX_PORTING_COMMON
+diff --git a/security/selinux/ss/policydb.c b/security/selinux/ss/policydb.c
+index fee7bdd7bb2ac..84e77ec0db29e 100644
+--- a/security/selinux/ss/policydb.c
++++ b/security/selinux/ss/policydb.c
+@@ -1476,9 +1476,9 @@ static int type_read(struct policydb *p, struct hashtab *h, void *fp)
+ 	return 0;
+ bad:
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifndef CONFIG_ALWAYS_ENFORCE
++#ifndef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	panic("SELinux:Failed to type read");
+-#endif /*CONFIG_ALWAYS_ENFORCE*/
++#endif /*CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE*/
+ // ] SEC_SELINUX_PORTING_COMMON
+ 	type_destroy(key, typdatum, NULL);
+ 	return rc;
+@@ -2548,9 +2548,9 @@ int policydb_read(struct policydb *p, void *fp)
+ 	return rc;
+ bad:
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifndef CONFIG_ALWAYS_ENFORCE
++#ifndef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	panic("SELinux:Failed to load policy");
+-#endif /*CONFIG_ALWAYS_ENFORCE*/
++#endif /*CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE*/
+ // ] SEC_SELINUX_PORTING_COMMON
+ 	policydb_destroy(p);
+ 	goto out;
+diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
+index e7e72c092f734..89eb544417c9c 100644
+--- a/security/selinux/ss/services.c
++++ b/security/selinux/ss/services.c
+@@ -745,8 +745,10 @@ static int security_validtrans_handle_fail(struct selinux_state *state,
+ 	kfree(t);
+ 
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+     	selinux_enforcing = 1;
++#elif defined(CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE)
++    	selinux_enforcing = 0;
+ #endif
+ 	
+ 	if (!selinux_enforcing) // SEC_SELINUX_PORTING_COMMON Change to use RKP 
+@@ -1673,8 +1675,10 @@ static int compute_sid_handle_invalid_context(
+ 	kfree(t);
+ 	kfree(n);
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	selinux_enforcing = 1;
++#elif defined(CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE)
++	selinux_enforcing = 0;
+ #endif
+ 	if (!selinux_enforcing) // SEC_SELINUX_PORTING_COMMON Change to use RKP 
+             return 0;
+@@ -1976,8 +1980,10 @@ static inline int convert_context_handle_invalid_context(
+ 	u32 len;
+ 
+ // [ SEC_SELINUX_PORTING_COMMON 
+-	#ifdef CONFIG_ALWAYS_ENFORCE
++	#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 	    selinux_enforcing = 1;
++	#elif defined(CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE)
++	    selinux_enforcing = 0;
+ 	#endif
+ 	if (!selinux_enforcing) // SEC_SELINUX_PORTING_COMMON Change to use RKP
+ 		return -EINVAL;
+diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
+index 780be54de9f2d..b080b9f8adf5b 100644
+--- a/security/selinux/ss/status.c
++++ b/security/selinux/ss/status.c
+@@ -54,8 +54,10 @@ struct page *selinux_kernel_status_page(struct selinux_state *state)
+ 			status->version = SELINUX_KERNEL_STATUS_VERSION;
+ 			status->sequence = 0;
+ // [ SEC_SELINUX_PORTING_COMMON
+-#ifdef CONFIG_ALWAYS_ENFORCE
++#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+ 			status->enforcing = 1;
++#elif defined(CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE)
++			status->enforcing = 0;
+ #else
+ 			status->enforcing = enforcing_enabled(state);
+ #endif
+-- 
+2.39.0
+
+
+From 2976a6542fe95a1bbd12388c61678d5c780f5b17 Mon Sep 17 00:00:00 2001
+From: haridhayal11 <haridhayal@gmail.com>
+Date: Sun, 11 Sep 2022 12:24:06 +0530
+Subject: [PATCH 09/10] ARM64: configs: Set androidboot.boot_devices
+
+Co-authored-by: Tim Zimmermann <tim@linux4.de>
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig b/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
+index bddca0e8315f3..f7653d5c63dfd 100644
+--- a/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
++++ b/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
+@@ -451,7 +451,8 @@ CONFIG_RANDOMIZE_MODULE_REGION_FULL=y
+ #
+ # Boot options
+ #
+-CONFIG_CMDLINE=""
++CONFIG_CMDLINE="androidboot.boot_devices=13100000.ufs"
++CONFIG_CMDLINE_EXTEND=y
+ CONFIG_EFI_STUB=y
+ CONFIG_EFI=y
+ # CONFIG_DMI is not set
+-- 
+2.39.0
+
+
+From 659689c5b6c19431a347efea6eb855609c92a2e4 Mon Sep 17 00:00:00 2001
+From: BlackMesa123 <brother12@hotmail.it>
+Date: Thu, 30 Jul 2020 21:03:11 +0300
+Subject: [PATCH 10/10] ARM64: configs: afaneh_[o1][t2][p3]s_defconfig: Enable
+ selinux never enforce
+
+Signed-off-by: Shreyash Wasnik <shreyashwasnik112@gmail.com>
+---
+ arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig b/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
+index f7653d5c63dfd..dc084038be6c2 100644
+--- a/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
++++ b/arch/arm64/configs/lightning_exynos2100-r9sxxx_defconfig
+@@ -6840,6 +6840,8 @@ CONFIG_SECURITY_SELINUX=y
+ # CONFIG_SECURITY_SELINUX_BOOTPARAM is not set
+ # CONFIG_SECURITY_SELINUX_DISABLE is not set
+ CONFIG_SECURITY_SELINUX_DEVELOP=y
++# CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE is not set
++CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y
+ CONFIG_SECURITY_SELINUX_AVC_STATS=y
+ CONFIG_SECURITY_SELINUX_CHECKREQPROT_VALUE=0
+ CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS=9
+-- 
+2.39.0
+

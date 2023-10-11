@@ -7,11 +7,11 @@ DIR="$(pwd)"
 PARENT_DIR="$(pwd)"
 
 echo "Cloning dependencies"
-git clone --branch main_2 https://github.com/prorooter007/android_kernel_samsung_exynos2100 kernel
+git clone --depth=1 --branch main_2 https://github.com/prorooter007/android_kernel_samsung_exynos2100 kernel
 cd kernel 
-git clone --branch android-9.0.0_r59 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
-git clone https://github.com/afaneh-toolchain/prebuilts_clang_host_linux-x86_clang-r383902 clang-r383902
-git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
+git clone --depth=1 --branch android-11.0.0_r48 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
+git clone --depth=1  https://github.com/prorooter007/android_prebuilts_clang_host_linux-x86_clang-6877366 clang-r383902
+git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
 echo "Done"
 KERNEL_DIR=$(pwd)
 OUT_DIR="$(pwd)/out"
@@ -30,7 +30,7 @@ export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$(pwd)/aarch64-linux-android-4.9/b
 export CLANG_PREBUILT_BIN="$(pwd)/clang-r383902/bin"
 export PATH=$PATH:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$CLANG_PREBUILT_BIN
 export LLVM=1
-KERNEL_MAKE_ENV="LOCALVERSION=-Lightning-V1.1"
+KERNEL_MAKE_ENV="LOCALVERSION=-Lightning-V2"
 
 # Color
 ON_BLUE=`echo -e "\033[44m"`	# On Blue
@@ -40,7 +40,7 @@ BGREEN=`echo -e "\033[1;32m"`	# Bold Green
 UNDER_LINE=`echo -e "\e[4m"`	# Text Under Line
 STD=`echo -e "\033[0m"`		# Text Clear
  
-  
+build_kernel(){  
   echo "${BGREEN}***** Compiling kernel *****${STD}"
   [ ! -d "$OUT_DIR" ] && mkdir $OUT_DIR
   make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV lightning_exynos2100-r9sxxx_defconfig
@@ -73,9 +73,21 @@ STD=`echo -e "\033[0m"`		# Text Clear
     sed -i "s/insert_line/#insert_line/g" anykernel.sh
     sed -i "s/append_file/#append_file/g" anykernel.sh
     sed -i "s/patch_fstab/#patch_fstab/g" anykernel.sh
-    sed -i "s/dump_boot/split_boot/g" anykernel.sh
-    sed -i "s/write_boot/flash_boot/g" anykernel.sh
     zip -r9 "$(pwd)/exynos2100-r9sxxx_kernel_.zip" * -x .git README.md *placeholder
     
     curl https://bashupload.com/$REPACK_DIR/exynos2100-r9sxxx_kernel_.zip --data-binary @$REPACK_DIR/exynos2100-r9sxxx_kernel_.zip
   fi
+}
+
+gsi_kernel(){
+  echo "${BGREEN}***** Apply GSI patch *****${STD}"
+
+  cd $KERNEL_DIR
+  git apply gsi-commits.patch
+}
+
+build_kernel
+
+gsi_kernel
+
+build_kernel
