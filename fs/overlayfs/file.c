@@ -14,8 +14,6 @@
 #include <linux/fs.h>
 #include "overlayfs.h"
 
-#define OVL_IOCB_MASK (IOCB_DSYNC | IOCB_HIPRI | IOCB_NOWAIT | IOCB_SYNC)
-
 static char ovl_whatisit(struct inode *inode, struct inode *realinode)
 {
 	if (realinode != ovl_inode_upper(inode))
@@ -36,10 +34,23 @@ static struct file *ovl_open_realfile(const struct file *file,
 	struct file *realfile;
 	const struct cred *old_cred;
 	int flags = file->f_flags | OVL_OPEN_FLAGS;
+	int acc_mode = ACC_MODE(flags);
+	int err;
+
+	if (flags & O_APPEND)
+		acc_mode |= MAY_APPEND;
 
 	old_cred = ovl_override_creds(inode->i_sb);
-	realfile = open_with_fake_path(&file->f_path, flags, realinode,
-				       current_cred());
+	err = inode_permission(realinode, MAY_OPEN | acc_mode);
+	if (err) {
+		realfile = ERR_PTR(err);
+	} else {
+		if (!inode_owner_or_capable(realinode))
+			flags &= ~O_NOATIME;
+
+		realfile = open_with_fake_path(&file->f_path, flags, realinode,
+					       current_cred());
+	}
 	ovl_revert_creds(inode->i_sb, old_cred);
 
 	pr_debug("open(%p[%pD2/%c], 0%o) -> (%p, 0%o)\n",
@@ -55,12 +66,6 @@ static int ovl_change_flags(struct file *file, unsigned int flags)
 {
 	struct inode *inode = file_inode(file);
 	int err;
-
-	flags |= OVL_OPEN_FLAGS;
-
-	/* If some flag changed that cannot be changed then something's amiss */
-	if (WARN_ON((file->f_flags ^ flags) & ~OVL_SETFL_MASK))
-		return -EIO;
 
 	flags &= OVL_SETFL_MASK;
 
@@ -215,6 +220,23 @@ static void ovl_file_accessed(struct file *file)
 	touch_atime(&file->f_path);
 }
 
+static rwf_t ovl_iocb_to_rwf(struct kiocb *iocb)
+{
+	int ifl = iocb->ki_flags;
+	rwf_t flags = 0;
+
+	if (ifl & IOCB_NOWAIT)
+		flags |= RWF_NOWAIT;
+	if (ifl & IOCB_HIPRI)
+		flags |= RWF_HIPRI;
+	if (ifl & IOCB_DSYNC)
+		flags |= RWF_DSYNC;
+	if (ifl & IOCB_SYNC)
+		flags |= RWF_SYNC;
+
+	return flags;
+}
+
 static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
 	struct file *file = iocb->ki_filp;
@@ -231,7 +253,7 @@ static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	ret = vfs_iter_read(real.file, iter, &iocb->ki_pos,
-			    iocb_to_rw_flags(iocb->ki_flags, OVL_IOCB_MASK));
+			    ovl_iocb_to_rwf(iocb));
 	ovl_revert_creds(file_inode(file)->i_sb, old_cred);
 
 	ovl_file_accessed(file);
@@ -266,7 +288,7 @@ static ssize_t ovl_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	file_start_write(real.file);
 	ret = vfs_iter_write(real.file, iter, &iocb->ki_pos,
-			     iocb_to_rw_flags(iocb->ki_flags, OVL_IOCB_MASK));
+			     ovl_iocb_to_rwf(iocb));
 	file_end_write(real.file);
 	ovl_revert_creds(file_inode(file)->i_sb, old_cred);
 
@@ -281,45 +303,48 @@ out_unlock:
 	return ret;
 }
 
-static ssize_t ovl_splice_read(struct file *in, loff_t *ppos,
-			 struct pipe_inode_info *pipe, size_t len,
-			 unsigned int flags)
+/*
+ * Calling iter_file_splice_write() directly from overlay's f_op may deadlock
+ * due to lock order inversion between pipe->mutex in iter_file_splice_write()
+ * and file_start_write(real.file) in ovl_write_iter().
+ *
+ * So do everything ovl_write_iter() does and call iter_file_splice_write() on
+ * the real file.
+ */
+static ssize_t ovl_splice_write(struct pipe_inode_info *pipe, struct file *out,
+				loff_t *ppos, size_t len, unsigned int flags)
 {
-	ssize_t ret;
 	struct fd real;
 	const struct cred *old_cred;
+	struct inode *inode = file_inode(out);
+	struct inode *realinode = ovl_inode_real(inode);
+	ssize_t ret;
 
-	ret = ovl_real_fdget(in, &real);
+	inode_lock(inode);
+	/* Update mode */
+	ovl_copyattr(realinode, inode);
+	ret = file_remove_privs(out);
 	if (ret)
-		return ret;
-
-	old_cred = ovl_override_creds(file_inode(in)->i_sb);
-	ret = generic_file_splice_read(real.file, ppos, pipe, len, flags);
-	revert_creds(old_cred);
-
-	ovl_file_accessed(in);
-	fdput(real);
-	return ret;
-}
-
-static ssize_t
-ovl_splice_write(struct pipe_inode_info *pipe, struct file *out,
-			  loff_t *ppos, size_t len, unsigned int flags)
-{
-	struct fd real;
-	const struct cred *old_cred;
-	ssize_t ret;
+		goto out_unlock;
 
 	ret = ovl_real_fdget(out, &real);
 	if (ret)
-		return ret;
+		goto out_unlock;
 
-	old_cred = ovl_override_creds(file_inode(out)->i_sb);
+	old_cred = ovl_override_creds(inode->i_sb);
+	file_start_write(real.file);
+
 	ret = iter_file_splice_write(pipe, real.file, ppos, len, flags);
-	revert_creds(old_cred);
 
-	ovl_file_accessed(out);
+	file_end_write(real.file);
+	/* Update size */
+	ovl_copyattr(realinode, inode);
+	revert_creds(old_cred);
 	fdput(real);
+
+out_unlock:
+	inode_unlock(inode);
+
 	return ret;
 }
 
@@ -679,7 +704,7 @@ const struct file_operations ovl_file_operations = {
 	.fadvise	= ovl_fadvise,
 	.unlocked_ioctl	= ovl_ioctl,
 	.compat_ioctl	= ovl_compat_ioctl,
-	.splice_read    = ovl_splice_read,
+	.splice_read    = generic_file_splice_read,
 	.splice_write   = ovl_splice_write,
 
 	.copy_file_range	= ovl_copy_file_range,
