@@ -1060,6 +1060,8 @@ static void regdb_fw_cb(const struct firmware *fw, void *context)
 
 static int query_regdb_file(const char *alpha2)
 {
+	int err;
+
 	ASSERT_RTNL();
 
 	if (regdb)
@@ -1069,9 +1071,13 @@ static int query_regdb_file(const char *alpha2)
 	if (!alpha2)
 		return -ENOMEM;
 
-	return request_firmware_nowait(THIS_MODULE, true, "regulatory.db",
-				       &reg_pdev->dev, GFP_KERNEL,
-				       (void *)alpha2, regdb_fw_cb);
+	err = request_firmware_nowait(THIS_MODULE, true, "regulatory.db",
+				      &reg_pdev->dev, GFP_KERNEL,
+				      (void *)alpha2, regdb_fw_cb);
+	if (err)
+		kfree(alpha2);
+
+	return err;
 }
 
 int reg_reload_regdb(void)
@@ -3792,6 +3798,7 @@ void wiphy_regulatory_register(struct wiphy *wiphy)
 
 	wiphy_update_regulatory(wiphy, lr->initiator);
 	wiphy_all_share_dfs_chan_state(wiphy);
+	reg_process_self_managed_hints();
 }
 
 void wiphy_regulatory_deregister(struct wiphy *wiphy)
@@ -3951,9 +3958,26 @@ void regulatory_propagate_dfs_state(struct wiphy *wiphy,
 	}
 }
 
+unsigned int lpcharge;
+static int is_lpm_check(char *str)
+{
+        if (strncmp(str, "charger", 7) == 0)
+                lpcharge = 1;
+
+        pr_info("%s: Low power charging mode: %d\n", __func__, lpcharge);
+
+        return lpcharge;
+}
+__setup("androidboot.mode=", is_lpm_check);
+
 static int __init regulatory_init_db(void)
 {
 	int err;
+
+	if(lpcharge) {
+		pr_info("%s: skip regulatory_init_db due to lpm mode.\n", __func__);
+		return 0;
+	}
 
 	/*
 	 * It's possible that - due to other bugs/issues - cfg80211
@@ -4001,6 +4025,11 @@ late_initcall(regulatory_init_db);
 
 int __init regulatory_init(void)
 {
+	if(lpcharge) {
+		pr_info("%s: skip regulatory_init due to lpm mode.\n", __func__);
+		return 0;
+	}
+	
 	reg_pdev = platform_device_register_simple("regulatory", 0, NULL, 0);
 	if (IS_ERR(reg_pdev))
 		return PTR_ERR(reg_pdev);
