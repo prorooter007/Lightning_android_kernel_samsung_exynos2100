@@ -531,7 +531,7 @@ struct skb_shared_info {
 	 * remains valid until skb destructor */
 	void *		destructor_arg;
 
-	ANDROID_OEM_DATA_ARRAY(1, 3);
+	ANDROID_VENDOR_DATA_ARRAY(1, 3);
 
 	/* must be last field, see pskb_expand_head() */
 	skb_frag_t	frags[MAX_SKB_FRAGS];
@@ -665,6 +665,7 @@ typedef unsigned char *sk_buff_data_t;
  *	@wifi_acked: whether frame was acked on wifi or not
  *	@no_fcs:  Request NIC to treat last 4 bytes as Ethernet FCS
  *	@csum_not_inet: use CRC32c to resolve CHECKSUM_PARTIAL
+ *	@scm_io_uring: SKB holds io_uring registered files
  *	@dst_pending_confirm: need to confirm neighbour
  *	@decrypted: Decrypted SKB
  *	@napi_id: id of the NAPI struct this skb came from
@@ -723,7 +724,11 @@ struct sk_buff {
 	 * want to keep them across layers you have to do a skb_clone()
 	 * first. This is owned by whoever has the skb queued ATM.
 	 */
+#ifdef CONFIG_MPTCP
+	char			cb[80] __aligned(8);
+#else
 	char			cb[48] __aligned(8);
+#endif
 
 	union {
 		struct {
@@ -880,7 +885,25 @@ struct sk_buff {
 	__u32			headers_end[0];
 	/* public: */
 
-	ANDROID_KABI_RESERVE(1);
+	/* Android KABI preservation.
+	 *
+	 * "open coded" version of ANDROID_KABI_USE() to pack more
+	 * fields/variables into the space that we have.
+	 *
+	 * scm_io_uring is from 04df9719df18 ("io_uring/af_unix: defer
+	 * registered files gc to io_uring release")
+	 */
+	/* NOTE: due to these fields ending up after headers_end, we have to
+	 * manually copy them in the __copy_skb_header() call in skbuf.c.  Be
+	 * very aware of that if you change these fields.
+	 */
+	_ANDROID_KABI_REPLACE(_ANDROID_KABI_RESERVE(1),
+			 struct {
+				__u8 scm_io_uring:1;
+				__u8 android_kabi_reserved1_padding1;
+				__u16 android_kabi_reserved1_padding2;
+				__u32 android_kabi_reserved1_padding3;
+				});
 	ANDROID_KABI_RESERVE(2);
 
 	/* These elements must be at the end, see alloc_skb() for details.  */
@@ -1896,7 +1919,7 @@ static inline void __skb_insert(struct sk_buff *newsk,
 	WRITE_ONCE(newsk->prev, prev);
 	WRITE_ONCE(next->prev, newsk);
 	WRITE_ONCE(prev->next, newsk);
-	list->qlen++;
+	WRITE_ONCE(list->qlen, list->qlen + 1);
 }
 
 static inline void __skb_queue_splice(const struct sk_buff_head *list,
@@ -2209,6 +2232,14 @@ static inline void skb_set_tail_pointer(struct sk_buff *skb, const int offset)
 }
 
 #endif /* NET_SKBUFF_DATA_USES_OFFSET */
+
+static inline void skb_assert_len(struct sk_buff *skb)
+{
+#ifdef CONFIG_DEBUG_NET
+	if (WARN_ONCE(!skb->len, "%s\n", __func__))
+		DO_ONCE_LITE(skb_dump, KERN_ERR, skb, false);
+#endif /* CONFIG_DEBUG_NET */
+}
 
 /*
  *	Add data to an sk_buff
@@ -4120,7 +4151,6 @@ enum skb_ext_id {
 #if IS_ENABLED(CONFIG_NET_TC_SKB_EXT)
 	TC_SKB_EXT,
 #endif
-	SKB_EXT_ANDROID_VENDOR1, /* reserved for android vendor only */
 	SKB_EXT_NUM, /* must be last */
 };
 

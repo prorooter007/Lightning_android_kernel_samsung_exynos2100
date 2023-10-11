@@ -315,7 +315,6 @@ static inline bool mmc_op_multi(u32 opcode)
  */
 
 #define EXT_CSD_WR_REL_PARAM_EN		(1<<2)
-#define EXT_CSD_WR_REL_PARAM_EN_RPMB_REL_WR	(1<<4)
 
 #define EXT_CSD_BOOT_WP_B_PWR_WP_DIS	(0x40)
 #define EXT_CSD_BOOT_WP_B_PERM_WP_DIS	(0x10)
@@ -435,7 +434,7 @@ static inline bool mmc_op_multi(u32 opcode)
 #define MMC_SECURE_TRIM1_ARG		0x80000001
 #define MMC_SECURE_TRIM2_ARG		0x80008000
 #define MMC_SECURE_ARGS			0x80000000
-#define MMC_TRIM_ARGS			0x00008001
+#define MMC_TRIM_OR_DISCARD_ARGS	0x00008003
 
 #define mmc_driver_type_mask(n)		(1 << (n))
 
