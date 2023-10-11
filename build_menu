@@ -7,7 +7,7 @@ DIR="$(pwd)"
 PARENT_DIR="$(pwd)"
 
 echo "Cloning dependencies"
-git clone --depth=1 --branch main_2 https://github.com/prorooter007/android_kernel_samsung_exynos2100 kernel
+git clone --depth=1 --branch stock_13_ack_rebased https://github.com/prorooter007/Lightning_android_kernel_samsung_exynos2100 kernel
 cd kernel 
 git clone --depth=1 --branch android-11.0.0_r48 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
 git clone --depth=1  https://github.com/prorooter007/android_prebuilts_clang_host_linux-x86_clang-6877366 clang-r383902
@@ -30,7 +30,7 @@ export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$(pwd)/aarch64-linux-android-4.9/b
 export CLANG_PREBUILT_BIN="$(pwd)/clang-r383902/bin"
 export PATH=$PATH:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$CLANG_PREBUILT_BIN
 export LLVM=1
-KERNEL_MAKE_ENV="LOCALVERSION=-Lightning-V2"
+KERNEL_MAKE_ENV="LOCALVERSION=-Lightning-V3.0"
 
 # Color
 ON_BLUE=`echo -e "\033[44m"`	# On Blue
